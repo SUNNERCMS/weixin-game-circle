@@ -26,6 +26,8 @@
 │   └── logo_title.png                     // 标题 LOGO
 ├── shared
 │   └── scoring.js                         // 评分引擎唯一实现（主域与云函数共用，UMD）
+├── open-data
+│   └── index.js                           // 开放数据域入口（好友榜数据只在这里读得到）
 ├── .eslintrc.js                           // 代码规范
 ├── game.js                                // 游戏主入口（逻辑 + 渲染 + 状态；评分引擎已外提）
 ├── game.json                              // 游戏运行时配置
@@ -53,6 +55,7 @@
 | 层级 | 命令 | 依赖 | 覆盖 |
 |---|---|---|---|
 | 单元测试 | `cd ../who-is-circle-tests && npm test` | 无（纯 Node） | 评分引擎、扣分明细恒等式、无效判定、13 档段位、防作弊与不误伤真人、重放检测、存档自校验 |
+| 开放数据域守卫 | `cd ../who-is-circle-tests && npm run test:opendata` | 无（纯 Node） | `game.json` 的 `openDataContext` 指向的目录真实存在、开放数据域沙盒隔离（不越界调好友 API / 不引远程 URL）、打包产物边界 |
 | 端到端 | `cd ../who-is-circle-tests && npm run test:e2e` | 开发者工具预览服务 + `agent-browser` + Pillow | 笔迹单色（无彩色分段）、结算按钮、新纪录徽章、**结算卡片无诊断红字**、落笔重画清屏、首页按钮 |
 | 语法 | `node --check game.js` | 无 | 语法检查 |
 
@@ -130,6 +133,32 @@ v0.5 起结算卡片只保留「分数 + 段位 + 评语」三行，不再显示
 - **存档自校验**：最佳成绩同时保存笔迹；读取时重算分数，对不上说明分数被改过。
 - **判定策略**：风险分 ≥10 且命中 ≥2 条 → 判 `shadow`（不计入最佳）；≥5 → 判 `unverified`（不出分享卡）。
   单条弱信号不定罪——真人笔迹实测风险分 3，机器笔迹 18。
+
+## 开放数据域（好友榜的数据边界）
+
+好友的昵称、头像、分数属于**关系链数据**，微信只允许在**开放数据域**（一个独立的 JS 沙盒）里读取。
+主域拿不到这些数据本身，只能把开放数据域画到离屏画布 `sharedCanvas` 上的内容贴出来。
+
+```
+game.json      "openDataContext": "open-data"   ← 值是子目录名，不是路径
+open-data/     开放数据域代码（独立沙盒）：
+               · 能调 wx.getFriendCloudStorage / wx.getUserCloudStorage
+               · 不能 require 主域、没有 getApp、不能发网络请求、不能加载远程图片
+game.js        主域：wx.getOpenDataContext().canvas → ctx.drawImage(sharedCanvas, ...)
+```
+
+**踩过的坑，记一下**：
+
+- `openDataContext` 写错目录名**不会报错**，只是开放数据域静默不加载 —— 最难查的一类故障。
+  所以有守卫测试盯着（`who-is-circle-tests/unit/opendata.test.js`，含目录存在性、
+  沙盒隔离、API 越界三类断言）。
+- 离屏画布**只能画到上屏画布上**；上屏画布不能 `toDataURL`，其 context 不能 `getImageData`。
+- 非微信环境（浏览器调试页、Node 单测）没有这些 API —— 主域一律**静默降级**：不贴图、不报错。
+- 开放数据域的代码**不得引用主域符号**，且注释里提到的 API 名也不算调用
+  （守卫测试会剥离注释后再查，避免自己把自己搞红）。
+
+> 当前进度：**P1 骨架**。`open-data/index.js` 只画一块占位内容，用来验证「这条路通不通」；
+> 真正的好友榜渲染在 P4，入口与榜面 UI 在 P5。
 
 ## 可测试化
 

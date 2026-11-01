@@ -84,6 +84,9 @@
     BTN_HIT_PAD: 24,     // 按钮热区外扩，保证 ≥88×88
     ICON_BTN_R: 48,      // 顶栏图标热区半径（96×96 设计px，满足触摸标准）
     ICON_SIZE: 40,       // 图标视觉直径
+    // P1：开放数据域占位内容在首页的贴图矩形（左上角 + 尺寸，设计px）
+    // 真正的榜单入口与榜面由 P5 替换本占位
+    OD_PLACEHOLDER: { x: 125, y: 800, w: 500, h: 96 },
     MAX_POINTS: 900      // 笔迹点上限：超出后均匀抽稀，避免长笔迹被硬截断而画面冻结
   };
 
@@ -121,6 +124,24 @@
     createLinearGradient: function () { return { addColorStop: function () {} }; }
   };
 
+  // 取开放数据域的离屏画布（sharedCanvas）
+  //
+  // 好友的昵称/头像/分数属于关系链数据，只在开放数据域里读得到。主域拿不到数据本身，
+  // 只能把开放数据域画到 sharedCanvas 上的内容贴出来。
+  //
+  // 不可用时（非微信环境 / 老基础库没有这个 API / 调用抛错）一律返回 null ——
+  // 静默降级，绝不抛错：开放数据域是可选能力，不能因为它拖垮主玩法。
+  // 做成"注入 wxApi 的纯函数"是为了能直接单测这条降级矩阵。
+  function resolveSharedCanvas(wxApi) {
+    if (!wxApi || typeof wxApi.getOpenDataContext !== 'function') return null;
+    try {
+      var odc = wxApi.getOpenDataContext();
+      return (odc && odc.canvas) || null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   var env = {
     isWx: hasWx,
     canvas: null,
@@ -138,6 +159,12 @@
         getContext: function () { return stubCtx; },
         addEventListener: function () {}
       };
+    },
+
+    // 开放数据域的离屏画布（sharedCanvas）
+    getSharedCanvas: function () {
+      if (!hasWx) return null;
+      return resolveSharedCanvas(wx);
     },
 
     getScreenSize: function () {
@@ -979,6 +1006,36 @@
   }
 
   // ---- 主页 ----
+  // 开放数据域的离屏画布：懒取一次并缓存（getOpenDataContext 不便宜，且结果不变）
+  var odCanvas = null;
+  var odCanvasTried = false;
+  function getOdCanvas() {
+    if (!odCanvasTried) {
+      odCanvasTried = true;
+      odCanvas = env.getSharedCanvas();
+    }
+    return odCanvas;
+  }
+
+  // 把开放数据域画好的内容贴到主域画布
+  // 按 sharedCanvas 的实际宽高比等比居中 —— 开放数据域改了尺寸也不会拉伸变形，
+  // 主域也不必和它约定死尺寸（少一份会漂移的常量）。
+  function drawOpenData(c) {
+    var sc = getOdCanvas();
+    if (!sc || !sc.width || !sc.height) return;
+    var r = CFG.OD_PLACEHOLDER;
+    var ar = sc.width / sc.height;
+    var w = r.w, h = r.w / ar;
+    if (h > r.h) { h = r.h; w = r.h * ar; }
+    var x = r.x + (r.w - w) / 2;
+    var y = r.y + (r.h - h) / 2;
+    try {
+      c.drawImage(sc, x, y, w, h);
+    } catch (e) {
+      // 贴不上就当没有这一块 —— 开放数据域是可选能力，不能因此影响主玩法
+    }
+  }
+
   function renderHome(c, alpha, dx) {
     c.save();
     c.globalAlpha = alpha;
@@ -1005,6 +1062,8 @@
     } else {
       fillText(c, '还没有成绩，画一个试试', 375, bestY, '34px sans-serif', COL.grayText);
     }
+    // 开放数据域占位（P1）：好友榜内容由开放数据域画，这里只负责贴出来
+    drawOpenData(c);
     // 开画按钮
     drawButton(c, CFG.START_BTN, '开 画', pressedRatio('start'), true);
     // 底部说明
@@ -1376,6 +1435,7 @@
       guardCheck: guardCheck, shapeSig: shapeSig, isReplay: isReplay, judge: judge,
       encodePts: encodePts, decodePts: decodePts, fnv: fnv,
       largestGap: largestGap, INVALID_TIPS: INVALID_TIPS, BEST_SALT: BEST_SALT,
+      resolveSharedCanvas: resolveSharedCanvas,
       RANKS: RANKS, SCORE_CFG: SCORE_CFG, GUARD_CFG: GUARD_CFG, CFG: CFG
     };
   }
