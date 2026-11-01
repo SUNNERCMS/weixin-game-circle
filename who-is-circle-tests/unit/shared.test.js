@@ -55,7 +55,26 @@ ok(hit.length === 0, '共享模块不含任何平台 API 引用',
   hit.length ? '命中: ' + hit.join(',') : '已扫描 ' + FORBIDDEN.length + ' 个禁用词');
 ok(!/\brequire\s*\(/.test(src), '共享模块内部不 require 别的文件', '自包含');
 
-console.log('\n========== 三·b、防漂移：game.js 必须用同一份代码 ==========');
+console.log('\n========== 三、加载顺序守卫 ==========');
+const root = path.join(__dirname, '../../who-is-circle');
+const htmlSrc = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+const gameSrc = fs.readFileSync(path.join(root, 'game.js'), 'utf8');
+
+const iShared = htmlSrc.indexOf('shared/scoring.js');
+const iGame = htmlSrc.indexOf('src="game.js"');
+ok(iShared !== -1, 'index.html 引入了 shared/scoring.js');
+ok(iGame !== -1, 'index.html 引入了 game.js');
+ok(iShared !== -1 && iGame !== -1 && iShared < iGame,
+  'index.html 中 shared/scoring.js 排在 game.js 之前', `shared@${iShared} game@${iGame}`);
+
+ok(gameSrc.includes("require('./shared/scoring.js')"), 'game.js 通过 CommonJS 引用共享模块');
+const iReq = gameSrc.indexOf("require('./shared/scoring.js')");
+const iCfg = gameSrc.indexOf('var CFG = {');
+ok(iReq !== -1 && iCfg !== -1 && iReq < iCfg, '引用块在 var CFG 之前（早于任何使用点）');
+ok(gameSrc.includes('judge(r, g, replay, DEV)'), 'judge 调用点传入了 DEV');
+ok(!/function judge\(r, g, replay\)/.test(gameSrc), 'game.js 内不再有旧签名的 judge 定义');
+
+console.log('\n========== 四、防漂移：game.js 必须用同一份代码 ==========');
 const G = require('../../who-is-circle/game.js');
 ok(G.evaluate === S.evaluate, 'game.js 的 evaluate 就是 shared 的 evaluate（同一函数引用）');
 ok(G.guardCheck === S.guardCheck, 'game.js 的 guardCheck === shared 的 guardCheck');
@@ -64,7 +83,7 @@ ok(G.RANKS === S.RANKS, 'game.js 的 RANKS === shared 的 RANKS');
 ok(G.SCORE_CFG === S.SCORE_CFG, 'game.js 的 SCORE_CFG === shared 的 SCORE_CFG');
 ok(G.BEST_SALT === S.BEST_SALT, 'game.js 的 BEST_SALT === shared 的 BEST_SALT');
 
-console.log('\n========== 三、评分行为（与 game.js 口径一致）==========');
+console.log('\n========== 五、评分行为（与 game.js 口径一致）==========');
 const c = circle(375, 700, 250);
 const r = S.evaluate(c);
 ok(r.valid && r.score >= 97, '完美圆 → 高分', `score=${r.score}`);
@@ -72,7 +91,7 @@ ok(r.loss && Math.abs((r.loss.round + r.loss.close + r.loss.dir) - (100 - r.scor
   '扣分明细三项之和 = 100 − 总分',
   `Σloss=${(r.loss.round + r.loss.close + r.loss.dir).toFixed(2)} vs ${(100 - r.score).toFixed(2)}`);
 
-console.log('\n========== 四、judge 的 dev 参数 ==========');
+console.log('\n========== 六、judge 的 dev 参数 ==========');
 const rr = { score: 50, valid: true };
 const clean = { hard: [], risk: 0, hits: [] };
 const risky = { hard: [], risk: 99, hits: ['a', 'b'] };
@@ -81,7 +100,7 @@ ok(S.judge(rr, clean, false, true) === 'ok', 'judge 四参 dev=true → 豁免�
 ok(S.judge(rr, risky, false, true) === 'ok', 'dev=true 时高风险也被豁免');
 ok(S.judge(rr, risky, false) !== 'ok', 'dev 缺省时高风险不被豁免');
 
-console.log('\n========== 五、shapeSig 是 64 个数字的数组（不是字符串）==========');
+console.log('\n========== 七、shapeSig 是 64 个数字的数组（不是字符串）==========');
 const sig = S.shapeSig(c, r.fit);
 ok(Array.isArray(sig) && sig.length === 64, 'shapeSig 返回 64 元素数组',
   `type=${Array.isArray(sig) ? 'array' : typeof sig}`);
@@ -89,7 +108,7 @@ ok(sig.every(v => typeof v === 'number'), '数组元素全是 number',
   `样例 ${JSON.stringify(sig.slice(0, 3))}`);
 ok(S.isReplay(sig, [sig.map(v => v + 0.05)]) === false, '数组指纹参与重放比较');
 
-console.log('\n========== 六、pts 与 raw 的入参约定 ==========');
+console.log('\n========== 八、pts 与 raw 的入参约定 ==========');
 const pts = circle(375, 700, 250, { noise: 0.02 });
 const dec = S.decodePts(S.encodePts(pts));
 ok(dec.length === pts.length && typeof dec[0].x === 'number' && typeof dec[0].t === 'number',
