@@ -55,6 +55,15 @@ ok(hit.length === 0, '共享模块不含任何平台 API 引用',
   hit.length ? '命中: ' + hit.join(',') : '已扫描 ' + FORBIDDEN.length + ' 个禁用词');
 ok(!/\brequire\s*\(/.test(src), '共享模块内部不 require 别的文件', '自包含');
 
+console.log('\n========== 三·b、防漂移：game.js 必须用同一份代码 ==========');
+const G = require('../../who-is-circle/game.js');
+ok(G.evaluate === S.evaluate, 'game.js 的 evaluate 就是 shared 的 evaluate（同一函数引用）');
+ok(G.guardCheck === S.guardCheck, 'game.js 的 guardCheck === shared 的 guardCheck');
+ok(G.judge === S.judge, 'game.js 的 judge === shared 的 judge');
+ok(G.RANKS === S.RANKS, 'game.js 的 RANKS === shared 的 RANKS');
+ok(G.SCORE_CFG === S.SCORE_CFG, 'game.js 的 SCORE_CFG === shared 的 SCORE_CFG');
+ok(G.BEST_SALT === S.BEST_SALT, 'game.js 的 BEST_SALT === shared 的 BEST_SALT');
+
 console.log('\n========== 三、评分行为（与 game.js 口径一致）==========');
 const c = circle(375, 700, 250);
 const r = S.evaluate(c);
