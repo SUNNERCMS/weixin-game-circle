@@ -24,8 +24,10 @@
 ├── assets                                 // 资源目录
 │   ├── home_bg.png                        // 主页底图
 │   └── logo_title.png                     // 标题 LOGO
+├── shared
+│   └── scoring.js                         // 评分引擎唯一实现（主域与云函数共用，UMD）
 ├── .eslintrc.js                           // 代码规范
-├── game.js                                // 游戏主入口（单文件，含逻辑 + 渲染 + 评分引擎）
+├── game.js                                // 游戏主入口（逻辑 + 渲染 + 状态；评分引擎已外提）
 ├── game.json                              // 游戏运行时配置
 ├── index.html                             // 浏览器端调试入口（不参与小程序包）
 ├── project.config.json                    // 项目配置（appid / 打包设置）
@@ -77,6 +79,13 @@
 
 ## 评分引擎（v0.2）
 
+> **实现位置：`shared/scoring.js`** —— 评分与防作弊判定的**唯一实现**，主域（`game.js`）与
+> 未来的云函数共用同一份，保证两端算出的分数逐位一致。
+> 约束：**纯函数模块**，不得引用任何平台全局对象、不得读写存储（云函数与小游戏主域没有共同的
+> 平台 API，一旦混入宿主调用，"共享"就失效了）。UMD 包装，CommonJS 与浏览器全局 `Scoring`
+> 同时可得，共 24 个导出符号。
+> 改动后必须跑 `who-is-circle-tests` 的 `npm test` 与 `npm run test:e2e`。
+
 分数 = **R(圆度) × C(闭合) × D(方向)**，三者都在 0～1 之间，因此分数天然覆盖 0～100 全区间。
 
 **① 预处理**：按 4 设计px 等弧长重采样（消除手速快慢造成的采样密度偏差），
@@ -104,6 +113,11 @@ v0.5 起结算卡片只保留「分数 + 段位 + 评语」三行，不再显示
 
 ## 防作弊（纯前端第一阶段）
 
+> 判定逻辑（`guardCheck` / `judge` / `shapeSig`）已移入 `shared/scoring.js`；`game.js` 只保留
+> 采集侧信号（`DEV` 豁免开关、`SIG` 采样参数、`pushRaw`）。
+> `judge(r, g, replay, dev)` 的第 4 参数控制"是否豁免风险判定"——开发预览传 `DEV`，
+> 服务端不传（即不豁免）。**缺省值是"不豁免"**，避免正式版误伤真人。
+
 目标：挡住低成本作弊（改存储 / 控制台伪造 / 脚本灌入 / 匀速自动画圆），**且不误伤真人**：
 可疑成绩照常显示，只是不计入最佳、不出分享卡。局限：解包改代码挡不住，只能拖慢——
 真正的高分榜仍需要服务端重算。
@@ -111,17 +125,22 @@ v0.5 起结算卡片只保留「分数 + 段位 + 评语」三行，不再显示
 - **输入真实性**：事件时间戳与回调真实时长的偏差、采样间隔变异系数、重复时间戳占比。
 - **行为特征**：中段速度变异系数、起笔/收笔的加减速斜率、径向残差低频能量占比、
   二阶差分粗糙度（人手必有微颤，程序圆过于干净）。
-- **轨迹指纹**：取 64 个等距样本做 FNV 哈希，与本地最近 50 局比对，识别「重放同一形状」。
+- **轨迹指纹**：取 64 个等距样本的归一化径向残差（`number[64]`，非哈希），与本地最近 50 局
+  逐元素求平均绝对偏差，识别「重放同一形状」。
 - **存档自校验**：最佳成绩同时保存笔迹；读取时重算分数，对不上说明分数被改过。
 - **判定策略**：风险分 ≥10 且命中 ≥2 条 → 判 `shadow`（不计入最佳）；≥5 → 判 `unverified`（不出分享卡）。
   单条弱信号不定罪——真人笔迹实测风险分 3，机器笔迹 18。
 
 ## 可测试化
 
-`game.js` 末尾以 `module.exports` 导出全部纯函数（`evaluate / resample / kasaFit / winding /
-roundScore / closeFactor / getRank / diagnose / upgradeTip / guardCheck / shapeSig / isReplay /
-judge / encodePts / decodePts`），Node 下 `require` 即可跑单测，无需画布；
-浏览器分支的输入绑定在无 `window` 时直接跳过。
+纯函数集中在 `shared/scoring.js`（24 个导出符号），`game.js` 末尾以 `module.exports` 转出同一批符号
+（`evaluate / resample / kasaFit / winding / roundScore / closeFactor / largestGap / getRank /
+diagnose / upgradeTip / guardCheck / shapeSig / isReplay / stat / judge / encodePts / decodePts /
+fnv / BEST_SALT / RANKS / SCORE_CFG / GUARD_CFG / INVALID_TIPS`），Node 下 `require` 即可跑单测，
+无需画布；浏览器分支的输入绑定在无 `window` 时直接跳过。
+
+`shared/scoring.js` 与 `game.js` 导出的是**同一批函数对象**（不是副本），
+`unit/shared.test.js` 用 `===` 断言这一点——防止有人又在 `game.js` 里留一份本地副本导致两端算法漂移。
 
 ## 小游戏适配要点
 
