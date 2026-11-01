@@ -22,3 +22,6 @@ node_modules/
 
 # ---- 端到端截图产物（每次跑覆盖，由 e2e/drive.mjs 生成） ----
 who-is-circle-tests/shots/
+
+# superpowers 计划工作区（临时草稿，不入库）
+.superpowers/
