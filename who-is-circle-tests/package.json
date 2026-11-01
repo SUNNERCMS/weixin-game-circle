@@ -1,0 +1,11 @@
+{
+  "name": "who-is-circle-tests",
+  "version": "0.2.0",
+  "private": true,
+  "description": "《谁最圆》回归套件：单元测试 + 端到端像素验收（与小游戏项目同级，不参与打包）",
+  "scripts": {
+    "test": "node unit/scorer.test.js",
+    "test:e2e": "node e2e/drive.mjs && python3 e2e/analyze.py",
+    "lint": "node --check ../who-is-circle/game.js"
+  }
+}
