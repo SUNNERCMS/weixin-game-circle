@@ -429,7 +429,7 @@ wx.getSetting({
 | P0 | 抽 `shared/scoring.js`（UMD），`game.js` 改为引用，**不动任何功能** | `npm test` + `npm run test:e2e` 全绿，32 项单测不回归 |
 | P1 | 加 `game.json` 的 `openDataContext` + 空的 `open-data/index.js`；主域能拿到 `sharedCanvas` 并贴一张占位图 | 预览里能看到占位图；打包产物不含 cloudfunctions |
 | P2 | 云函数 `score` + `shared/scoring.js` 同步脚本 + 云数据库集合与索引 | 本地调云函数能返回权威分；与客户端分一致（误差 ≤ 0.1） |
-| P3 | 主域上报链路（触发策略 + 分级同步/异步 + pending 队列 + 落 `setUserCloudStorage`） | 破纪录后云端 `scores` 有记录；被判无效时不更新本地 `H` |
+| P3 | 主域上报链路（触发策略 + 分级同步/异步 + pending 队列 + 落 `setUserCloudStorage`） | 破纪录后云端 `scores` 有记录；被判无效时不更新本地 `H`<br>**✅ 已完成**（计划：`../plans/2026-11-05-friend-leaderboard-p3-client-upload.md`）：新增 `js/cloud.js`；云端判无效时严格照本文档执行（不弹徽章、`H` 不变、不上榜）；**云端不可达时本文档 §7.4 写的是「`H` 不更新」，实作改为保持单机行为**（服务不可达 ≠ 作弊证据，且开发者工具预览里云函数常未部署，照抄会让玩家永远看不到新纪录徽章）；**开发版云端结论只作提示**（服务端无开发豁免，否则开发者自己的合成笔迹会被判 `shadow`）。两处取舍已写进 `who-is-circle/README.md`。 |
 | P4 | 开放数据域渲染（拉取 + 排序 + 画榜 + 样式参数 + 头像兜底） | 预览里能看到好友榜，含自己并高亮 |
 | P5 | 榜面 UI（首页入口 + overlay + 隐私门禁引导） | 真机能看到完整榜面；未授权时有引导 |
 | P6 | 打包体积检查 + 云环境转付费 + 文档（README 后台配置说明） | 打包产物不含云函数源码；正式版前环境已转付费 |

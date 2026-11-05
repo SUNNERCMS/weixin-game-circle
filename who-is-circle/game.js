@@ -18,6 +18,13 @@
        (typeof window !== 'undefined' && window.Scoring) || null);
   if (!Scoring) throw new Error('shared/scoring.js 未加载：浏览器端需在 game.js 之前引入 <script src="shared/scoring.js">');
 
+  // 云端上报模块（P3）：**可选依赖** —— 加载不到就退化成单机模式，玩法完全不受影响
+  // （排行榜是增值能力，不能因为它拖垮主玩法）
+  var CloudClient = (typeof module === 'object' && module && module.exports && typeof require === 'function')
+    ? (function () { try { return require('./js/cloud.js'); } catch (e) { return null; } })()
+    : ((typeof GameGlobal !== 'undefined' && GameGlobal.CloudClient) ||
+       (typeof window !== 'undefined' && window.CloudClient) || null);
+
   var SCORE_CFG = Scoring.SCORE_CFG;
   var GUARD_CFG = Scoring.GUARD_CFG;
   var RANKS = Scoring.RANKS;
@@ -87,7 +94,12 @@
     // P1：开放数据域占位内容在首页的贴图矩形（左上角 + 尺寸，设计px）
     // 真正的榜单入口与榜面由 P5 替换本占位
     OD_PLACEHOLDER: { x: 125, y: 800, w: 500, h: 96 },
-    MAX_POINTS: 900      // 笔迹点上限：超出后均匀抽稀，避免长笔迹被硬截断而画面冻结
+    MAX_POINTS: 900,     // 笔迹点上限：超出后均匀抽稀，避免长笔迹被硬截断而画面冻结
+
+    // ---- 云端（P3）----
+    CLOUD_ENV: 'cloud1-d6grvs82r581230b2',   // 云环境 ID
+    CLOUD_TIMEOUT_MS: 5000,                 // 云调用超时：超了按「服务不可达」降级，不卡住玩法
+    CLOUD_KEY: 'circle'                      // 托管数据 key（≤8 字符全英文，后台排行榜配置对应）
   };
 
   var COL = {
@@ -187,6 +199,12 @@
 
     now: function () {
       return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    },
+
+    // 墙钟时间（Unix 毫秒）：env.now() 是**相对时间**（performance.now），
+    // 不能直接当时间戳用 —— 托管数据的 update_time 要的是 Unix 秒。
+    wallNow: function () {
+      return Date.now();
     },
 
     loadImage: function (src, cb) {
@@ -309,6 +327,59 @@
       document.body.style.overscrollBehavior = 'none';
     }
   };
+
+  /* ============================================================
+   * 二·补、云端上报客户端（P3）
+   *
+   * 只有**有云**时才建客户端：浏览器预览、没有 wx.cloud 的环境一律退化成单机模式，
+   * 行为与 P3 之前完全一致（不调云函数、不影响本地最佳分与新纪录徽章）。
+   *
+   * 依赖全部注入到 js/cloud.js —— 那边不碰任何平台全局，所以 Node 里能用假实现测全部分支。
+   * ============================================================ */
+  var cloud = null;
+
+  function createCloudClient() {
+    if (!CloudClient) return null;
+    if (!hasWx || typeof wx.cloud === 'undefined' || typeof wx.cloud.callFunction !== 'function') return null;
+    try {
+      wx.cloud.init({ env: CFG.CLOUD_ENV, traceUser: true });
+    } catch (e) {
+      return null;   // 云环境没配 / 初始化失败 → 单机模式，不影响玩法
+    }
+    return CloudClient.createClient({
+      callFunction: function (name, data) {
+        return wx.cloud.callFunction({ name: name, data: data });
+      },
+      setUserCloudStorage: function (payload) {
+        return new Promise(function (resolve, reject) {
+          if (typeof wx.setUserCloudStorage !== 'function') {
+            reject(new Error('setUserCloudStorage 不可用'));
+            return;
+          }
+          wx.setUserCloudStorage({
+            KVDataList: payload.KVDataList,
+            success: function () { resolve(true); },
+            fail: function (err) { reject(err); }
+          });
+        });
+      },
+      storage: {
+        get: function (k) { return env.getStorageRaw(k); },
+        set: function (k, v) { env.setStorageRaw(k, v); }
+      },
+      now: function () { return env.wallNow(); },   // 墙钟：托管数据的 update_time 要 Unix 秒
+      key: CFG.CLOUD_KEY,
+      highScore: GUARD_CFG.HIGH_SCORE,   // 95：复用已有的「高分从严」阈值，不另造一个
+      timeoutMs: CFG.CLOUD_TIMEOUT_MS
+    });
+  }
+
+  // 段位索引（托管数据里的 level 字段）
+  function rankIndexOf(score) {
+    var rk = getRank(score);
+    var idx = RANKS.indexOf(rk.rank);
+    return idx < 0 ? 0 : idx;
+  }
 
   /* ============================================================
    * 三、画布初始化（逻辑坐标 750×1624，等比缩放居中，留边填底色）
@@ -836,9 +907,78 @@
       vibrated: false                                // 新纪录震动只触发一次
     };
     res.layout = layoutResult(res);   // 排版算一次存起来，不再每帧重算
+    res.pts = state.points.slice();   // 存一份笔迹：最高分存档要靠它自校验
+    res.localScore = r.score;         // 云端分回来之前，本地算的分
     state.result = res;
     // 最高分不立即改显示：新纪录徽章播完再落定（否则顶部数字先变、徽章后出现＝剧透）
-    if (res.isNew) state.bestPending = r.score;
+    if (res.isNew) state.bestPending = { score: r.score, pts: res.pts, cloudPending: false };
+    // P3：破纪录才上报云端（D4）。高分（≥95）同步等云端结论，低分异步不阻塞结算。
+    // 开发版（DEV）：云端结论只作提示，不改本地行为 —— 与本地 judge 的开发豁免同一个道理
+    //   （服务端没有开发豁免，开发者自己的合成笔迹会被云端判成 shadow，不豁免就没法调试）
+    if (res.isNew && cloud && cloud.enabled) {
+      res.cloudPending = !DEV && (r.score >= GUARD_CFG.HIGH_SCORE);
+      // 最佳分的落定也要等云端 —— 结算页被关掉了也不能让本地最佳分比榜上虚高
+      if (state.bestPending) state.bestPending.cloudPending = res.cloudPending;
+      cloud.submitIfRecord({
+        score: r.score,
+        level: rankIndexOf(r.score),
+        pts: encodePts(state.points),
+        sig: sig,
+        guard: g,
+        clientBest: (typeof state.best === 'number') ? state.best : 0,
+        onSettled: function (final) { onCloudSettled(res, final); }
+      });
+    }
+  }
+
+  // 云端结论落地
+  //
+  // · 同步路径（≥95）：分数换成**云端分**（榜上的分永远是云端算出来的）
+  // · 云端判无效（shadow / reject）：分数照常显示，但**不弹新纪录徽章**、
+  //   本地最佳分不变、也不上报托管数据（不上榜）
+  // · 云端不可达（unavailable）：**服务不可达 ≠ 作弊证据** —— 保持单机行为，
+  //   本地最佳分照常更新、徽章照常弹，只是不上榜、不弹错误提示
+  function onCloudSettled(res, final) {
+    if (!res || !final) return;
+    if (final.status === 'ok') {
+      var cs = final.cloudScore;
+      if (typeof cs === 'number' && Math.abs(cs - res.score) > 0.001) {
+        res.score = cs;
+        var rk = getRank(cs);
+        res.rank = rk.rank;
+        res.next = rk.next;
+        res.comment = pickComment(rk.rank);
+        res.layout = layoutResult(res);
+      }
+      res.cloudPending = false;
+      // 本地最佳分用**云端分** —— 本地不能比榜上虚高
+      if (state.bestPending && state.bestPending.pts === res.pts) {
+        state.bestPending.score = cs;
+        state.bestPending.cloudPending = false;
+      }
+      return;
+    }
+    if (final.status === 'shadow' || final.status === 'reject') {
+      if (!DEV) {
+        res.isNew = false;
+        res.cloudPending = false;
+        if (state.bestPending && state.bestPending.pts === res.pts) {
+          state.bestPending = null;   // 云端判无效 → 本地最佳分不动
+        }
+        return;
+      }
+      // 开发版：云端判无效只作提示，不改本地行为（与本地 judge 的开发豁免一致）
+      res.cloudPending = false;
+      if (state.bestPending && state.bestPending.pts === res.pts) {
+        state.bestPending.cloudPending = false;
+      }
+      return;
+    }
+    res.cloudPending = false;   // unavailable / off：保持单机行为
+    // 服务不可达 → 不等云端了，按单机行为落定最佳分（只不上榜而已）
+    if (state.bestPending && state.bestPending.pts === res.pts) {
+      state.bestPending.cloudPending = false;
+    }
   }
 
   /* ============================================================
@@ -1298,8 +1438,9 @@
     }
 
     // 6. 新纪录徽章：分数上方，600ms 左右摇摆 ±6°（星星自绘，不用 emoji）
+    //    cloudPending：高分路径还在等云端结论 —— 云端判无效就不该弹"新纪录"徽章
     var badgeEl = el - CFG.FADE_DELAY_MS - CFG.FADE_MS;
-    if (r.isNew && badgeEl > 0) {
+    if (r.isNew && !r.cloudPending && badgeEl > 0) {
       var wob = badgeEl < CFG.BADGE_MS
         ? 6 * Math.sin((badgeEl / CFG.BADGE_MS) * Math.PI * 4) * (1 - badgeEl / CFG.BADGE_MS)
         : 0;
@@ -1363,15 +1504,28 @@
     if (state.result) {
       var el = now - state.result.t0;
       // 新纪录：轻微震动，给一点“破纪录”的实感（v0.3 去掉音效，只保留触觉反馈）
-      if (state.result.isNew && !state.result.vibrated && el >= 0 && hasWx && wx.vibrateShort) {
+      // 高分路径要等云端结论（cloudPending）—— 云端判无效就不该有"破纪录"的错觉
+      if (state.result.isNew && !state.result.cloudPending && !state.result.vibrated &&
+          el >= 0 && hasWx && wx.vibrateShort) {
         state.result.vibrated = true;
         try { wx.vibrateShort({ type: 'light' }); } catch (e) { /* ignore */ }
       }
-      // 最高分落定：等"新纪录"徽章播完再改显示并写入存档（否则顶部数字先变＝剧透）
-      if (state.bestPending !== null && el >= CFG.FADE_DELAY_MS + CFG.FADE_MS) {
-        state.best = state.bestPending;
+    }
+    // 最高分落定：等"新纪录"徽章播完再改显示并写入存档（否则顶部数字先变＝剧透）
+    //   · 同步路径还要等云端结论 —— 榜上的分必须是云端认可的
+    //   · 结算页已经关掉（玩家直接落笔重画）时**立刻落定**，别把最佳分丢了
+    if (state.bestPending !== null) {
+      // cloudPending：高分路径还在等云端结论 —— **结算页被关掉了也要等**，
+      //   否则本地最佳分会比榜上虚高（榜上的分必须是云端认可的）
+      var canSettle = !state.bestPending.cloudPending;
+      if (canSettle && state.result) {
+        canSettle = (now - state.result.t0) >= CFG.FADE_DELAY_MS + CFG.FADE_MS;
+      }
+      if (canSettle) {
+        state.best = state.bestPending.score;
+        var bestPts = state.bestPending.pts || state.points || [];
         state.bestPending = null;
-        try { saveBestRecord(state.best, state.points); } catch (e) { /* ignore */ }
+        try { saveBestRecord(state.best, bestPts); } catch (e) { /* ignore */ }
       }
     }
   }
@@ -1412,6 +1566,16 @@
   /* ============================================================
    * 十二、启动
    * ============================================================ */
+  // 云端（P3）：建客户端 + 补传上次没传上去的 pending 队列
+  //   补传放在启动时 —— 玩家刚打开游戏就把上次断网时攒下的成绩补齐，榜上才不会出现"断更"
+  cloud = createCloudClient();
+  if (cloud && cloud.enabled) {
+    try {
+      var flushP = cloud.flushPending();
+      if (flushP && typeof flushP.catch === 'function') flushP.catch(function () { /* ignore */ });
+    } catch (e) { /* ignore */ }
+  }
+
   var pending = 2;
   var started = false;   // 主循环只允许启动一次（老实现图片超时后可能同时跑出两个 rAF 循环，白耗一倍算力）
   function canLoop() { return typeof requestAnimationFrame === 'function'; }
@@ -1436,6 +1600,9 @@
       encodePts: encodePts, decodePts: decodePts, fnv: fnv,
       largestGap: largestGap, INVALID_TIPS: INVALID_TIPS, BEST_SALT: BEST_SALT,
       resolveSharedCanvas: resolveSharedCanvas,
+      createCloudClient: createCloudClient,
+      // 结算链路（P3）的集成测试钩子：state 是运行时状态，onCloudSettled 是云端结论落地的入口
+      state: state, onCloudSettled: onCloudSettled,
       RANKS: RANKS, SCORE_CFG: SCORE_CFG, GUARD_CFG: GUARD_CFG, CFG: CFG
     };
   }
