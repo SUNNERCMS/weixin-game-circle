@@ -56,10 +56,12 @@
 
 | 层级 | 命令 | 依赖 | 覆盖 |
 |---|---|---|---|
-| 单元测试 | `cd ../who-is-circle-tests && npm test` | 无（纯 Node） | 评分引擎、扣分明细恒等式、无效判定、13 档段位、防作弊与不误伤真人、重放检测、存档自校验 |
+| 单元测试 | `cd ../who-is-circle-tests && npm test` | 无（纯 Node） | 评分引擎、扣分明细恒等式、无效判定、13 档段位、防作弊与不误伤真人、重放检测、存档自校验、**编码往返精度**（4 个真实分数档，往返误差 ≤ 0.1） |
 | 开放数据域守卫 | `cd ../who-is-circle-tests && npm run test:opendata` | 无（纯 Node） | `game.json` 的 `openDataContext` 指向的目录真实存在、开放数据域沙盒隔离（不越界调好友 API / 不引远程 URL）、打包产物边界 |
 | 云函数契约 | `cd ../who-is-circle-tests && npm run test:cloudfn` | 无（纯 Node） | 云函数里的 `scoring.js` 与 `shared/scoring.js` **sha256 相同**（算法不许漂移）、云函数不内联评分引擎、不引用小游戏主域符号、`cloudfunctions/` 被排除出小程序包 |
-| 云函数行为 | `cd ../who-is-circle-tests && node unit/cloudcore.test.js` | 无（纯 Node，内存 db） | 云端分 = 客户端分（误差 ≤ 0.1）、云端**重算**而非采信上报分（谎报 999.9 无效）、重放检测、速率限制、最高分只升不降、客户端 `guard` 不参与判定、`clock_drift` 的取舍在出参里看得见 |
+| 云函数行为 | `cd ../who-is-circle-tests && node unit/cloudcore.test.js` | 无（纯 Node，内存 db） | 云端分 = 客户端分（误差 ≤ 0.1）、云端**重算**而非采信上报分（谎报 999.9 无效）、重放检测、速率限制、最高分只升不降、客户端 `guard` 不参与判定、`clock_drift` 的取舍在出参里看得见、干跑不落库 |
+| 同步评分引擎 | `cd ../who-is-circle-tests && npm run sync:cloud` | 无 | 把 `shared/scoring.js` 机械拷贝进云函数（拷贝完由上面的 sha256 守卫验收） |
+| 端到端云端对拍 | `cd ../who-is-circle-tests && npm run verify:cloud` | CloudBase CLI（`tcb`）+ 已部署的 `score` | 4 档笔迹经**真实云函数**算出的分与客户端分之差 ≤ 0.1（走干跑通道，不落库、不污染榜单） |
 | 端到端 | `cd ../who-is-circle-tests && npm run test:e2e` | 开发者工具预览服务 + `agent-browser` + Pillow | 笔迹单色（无彩色分段）、结算按钮、新纪录徽章、**结算卡片无诊断红字**、落笔重画清屏、首页按钮 |
 | 语法 | `node --check game.js` | 无 | 语法检查 |
 
@@ -188,6 +190,10 @@ cloudfunctions/score/
 
 **集合不需要手工建**：入口会在首次调用时自动创建。索引也不需要 ——
 云数据库的 `orderBy` 强制要求索引，而 SDK 没有建索引的接口，所以查询刻意只用 `where` + 内存排序。
+
+**云调用没有微信上下文**，所以另有一条**干跑（`__selftest`）通道**：
+只算分不落库、身份固定为 `__selftest__`，用来验证「云端算的分 == 客户端算的分」而不污染榜单。
+细节见 `cloudfunctions/score/README.md`。
 
 > 当前进度：**P2**。客户端的上报链路是 P3，榜面是 P4/P5。
 

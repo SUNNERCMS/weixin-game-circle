@@ -119,6 +119,48 @@ where({ ts: { $gte: 7天前 } })     // where 不要求索引，只是全表扫�
 集合**不需要手工建**：入口的 `ensureCollections()` 会在首次调用时自动创建。
 `submissions` 只查最近 7 天，过期数据不清理但也不进查询范围。
 
+## 自检通道：干跑，不落库
+
+云调用（`tcb fn invoke`、控制台「云端测试」）**没有微信上下文**，
+`cloud.getWXContext().OPENID` 是空的 —— 这不是故障，是云调用的固有形态。
+没有 `OPENID` 就没有身份，也就没法落库，所以另开一条**干跑**通道，
+专门用来验证「云端算的分 == 客户端算的分」：
+
+```jsonc
+// 云调用 score，入参
+{
+  "__selftest": true,
+  "pts": [[123, -456, 16], ...],
+  "clientScore": 97.8
+}
+```
+
+走这条通道时：
+
+- 身份固定为 `__selftest__`（隔离身份，不污染真实榜单）
+- `dryRun = true`：**不写 `scores` / `submissions`**，也不做重放检测
+  （读到的真实历史会让判定结果不确定）
+- 出参带 `dryRun: true`，调用方一眼能看出这是干跑结果
+
+**安全边界**：这条通道只在**没有微信上下文**时可用，也就是只能从云端控制台 / CLI 触发。
+从小游戏里调用时微信一定会注入 `OPENID`，`dryRun` 恒为 `false`；
+攻击者在小游戏里没法让 `OPENID` 变空，所以它不是后门。
+（没有 `OPENID` 又不带 `__selftest` 的调用会被直接拒掉并返回「未登录」。）
+
+## 端到端对拍
+
+`who-is-circle-tests/tools/verify-cloud.mjs`（`npm run verify:cloud`）：
+造 4 档噪声的笔迹 → 客户端用 `shared/scoring.js` 算分并 `encodePts` → 调**已部署的云函数**
+（走上面的干跑通道）→ 对拍云端分与客户端分，验收线 **|Δ| ≤ 0.1**。
+
+```bash
+cd who-is-circle-tests
+CLOUD_ENV=cloud1-xxxx npm run verify:cloud
+```
+
+云函数没部署、环境 ID 不对、或云端算出的分对不上，脚本都会**报错并以非 0 退出码结束**，
+不会静默跳过。
+
 ## 部署
 
 ```bash

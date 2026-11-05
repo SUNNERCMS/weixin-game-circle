@@ -4,13 +4,14 @@
   "private": true,
   "description": "《谁最圆》回归套件：单元测试 + 端到端像素验收（与小游戏项目同级，不参与打包）",
   "scripts": {
-    "test": "node unit/scorer.test.js && node unit/shared.test.js && node unit/opendata.test.js && node unit/cloudfn.test.js",
+    "test": "node unit/scorer.test.js && node unit/shared.test.js && node unit/opendata.test.js && node unit/cloudcore.test.js && node unit/cloudfn.test.js",
     "test:unit": "node unit/scorer.test.js",
     "test:shared": "node unit/shared.test.js",
     "test:opendata": "node unit/opendata.test.js",
     "test:cloudfn": "node unit/cloudfn.test.js",
     "test:e2e": "node e2e/drive.mjs && python3 e2e/analyze.py",
     "sync:cloud": "node tools/sync-scoring.mjs",
+    "verify:cloud": "node tools/verify-cloud.mjs",
     "lint": "node --check ../who-is-circle/game.js && node --check ../who-is-circle/shared/scoring.js && node --check ../who-is-circle/open-data/index.js && node --check ../who-is-circle/cloudfunctions/score/index.js && node --check ../who-is-circle/cloudfunctions/score/core.js"
   }
 }

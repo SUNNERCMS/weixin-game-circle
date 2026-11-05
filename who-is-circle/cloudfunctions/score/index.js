@@ -45,7 +45,25 @@ exports.main = async (event) => {
   const ctx = cloud.getWXContext();
   try {
     await ensureCollections();
-    return await core.handle(event, ctx, {
+
+    // 没有微信上下文 = 不是从小游戏发起的（云调用 / 内部自检）。
+    // 生产路径不可能走到这里：从小游戏调用时微信一定会注入 OPENID。
+    // 所以这条分支是安全的 —— 攻击者在小游戏里无法让 OPENID 变空。
+    //
+    // 自检通道（__selftest）：只算分不落库，用隔离身份 '__selftest__'，
+    // 不会污染真实榜单。用来验证"云端算的分 == 客户端算的分"。
+    const dryRun = !ctx.OPENID;
+    if (dryRun && !(event && event.__selftest)) {
+      return {
+        ok: false, verdict: 'reject', score: 0, level: 0, newBest: false, best: 0,
+        reason: '未登录', cloudGuard: null, clientGuard: null, scoreDelta: null, replay: false, dryRun: false
+      };
+    }
+    const runCtx = dryRun
+      ? { OPENID: '__selftest__', APPID: ctx.APPID, ENV: ctx.ENV }
+      : ctx;
+
+    return await core.handle(event, runCtx, {
       getScore: async (openid) => {
         try {
           const res = await scores.doc(openid).get();
@@ -78,7 +96,7 @@ exports.main = async (event) => {
         rows.sort((a, b) => (b.ts || 0) - (a.ts || 0));
         return rows.slice(0, limit);
       }
-    });
+    }, { dryRun: dryRun });
   } catch (e) {
     console.error('[score] 处理失败：', e);
     // 云端异常一律 reject：宁可这局不上榜，也不能让异常分进榜

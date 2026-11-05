@@ -43,6 +43,10 @@ async function handle(event, ctx, db, opts) {
   var scanLimit = opts.replayScanLimit || REPLAY_SCAN_LIMIT;
   var rateWindowSec = opts.rateWindowSec || RATE_WINDOW_SEC;
   var rateMax = opts.rateMax || RATE_MAX;
+  // 干跑：只算分与判定，**不落库**。
+  // 用于内部自检（云调用没有微信上下文，只能这样验证云端算分是否与客户端一致），
+  // 也保证自检不会污染真实榜单。干跑时也不做重放检测 —— 读到的真实历史会让结果不确定。
+  var dryRun = !!opts.dryRun;
 
   var OPENID = ctx && ctx.OPENID;
   if (!OPENID) {
@@ -93,7 +97,7 @@ async function handle(event, ctx, db, opts) {
   // ---- 7. 重放检测（judge 需要它，必须先做）----
   var replay = false;
   var sigHash = sig ? S.fnv(JSON.stringify(sig)) : '';
-  if (sig) {
+  if (sig && !dryRun) {
     // 一次查询 + 内存比对，**不依赖任何索引**：
     //   云数据库的 orderBy 强制要求字段有索引，而 wx-server-sdk 没有建索引的接口
     //   （索引只能在控制台手工建）。所以这里用 ts 范围过滤（where 不要求索引），
@@ -124,34 +128,41 @@ async function handle(event, ctx, db, opts) {
     return typeof t === 'number' && (nowSec - t) < rateWindowSec;
   });
   if (recentSubmits.length >= rateMax) {
-    await db.addSubmission(submissionDoc(OPENID, sig, sigHash, r.score, 'reject', nowSec, ev, 'rate_limit'));
+    if (!dryRun) {
+      await db.addSubmission(submissionDoc(OPENID, sig, sigHash, r.score, 'reject', nowSec, ev, 'rate_limit'));
+    }
     var out = result('reject', r.score, '提交过于频繁，请稍后再试', null, cloudGuard);
     out.best = mine && typeof mine.score === 'number' ? mine.score : 0;
+    out.dryRun = dryRun;
     return out;
   }
 
-  // ---- 8. 落库 ----
-  // submissions：每次都写（含被拒的），用于重放检测与审计
-  await db.addSubmission(submissionDoc(OPENID, sig, sigHash, r.score, verdict, nowSec, ev, null));
-
-  // scores：仅当更高分才更新分数字段；但速率信息每次都要更新
+  // ---- 8. 落库（干跑模式跳过，自检不污染真实榜单）----
   var best = (mine && typeof mine.score === 'number') ? mine.score : 0;
   var newBest = r.score > best;
   var nextBest = newBest ? r.score : best;
-  var row = {
-    score: nextBest,
-    level: levelIndex(nextBest),
-    updatedAt: nowSec,
-    lastSubmitAt: nowSec,
-    recentSubmits: recentSubmits.concat([nowSec])
-  };
-  await db.setScore(OPENID, row);
+
+  if (!dryRun) {
+    // submissions：每次都写（含被拒的），用于重放检测与审计
+    await db.addSubmission(submissionDoc(OPENID, sig, sigHash, r.score, verdict, nowSec, ev, null));
+
+    // scores：仅当更高分才更新分数字段；但速率信息每次都要更新
+    var row = {
+      score: nextBest,
+      level: levelIndex(nextBest),
+      updatedAt: nowSec,
+      lastSubmitAt: nowSec,
+      recentSubmits: recentSubmits.concat([nowSec])
+    };
+    await db.setScore(OPENID, row);
+  }
 
   var out = result(verdict, r.score, verdict === 'ok' ? '' : verdictText(verdict), nextBest, cloudGuard);
   out.newBest = newBest;
   out.best = nextBest;
   out.level = levelIndex(nextBest);
   out.replay = replay;
+  out.dryRun = dryRun;
   // 客户端自报分与云端权威分的差 —— P2 的验收指标就是它 ≤ 0.1
   out.scoreDelta = (typeof ev.clientScore === 'number')
     ? Math.round((r.score - ev.clientScore) * 10000) / 10000
@@ -216,7 +227,8 @@ function result(verdict, score, reason, best, cloudGuard) {
     cloudGuard: cloudGuard || null,
     clientGuard: null,
     scoreDelta: null,
-    replay: false
+    replay: false,
+    dryRun: false
   };
 }
 

@@ -198,6 +198,32 @@ function makeEvent(pts, extra) {
   ok(core.MAX_POINTS === G.CFG.MAX_POINTS, '云端点数上限与主域 CFG.MAX_POINTS 一致',
     core.MAX_POINTS + ' vs ' + G.CFG.MAX_POINTS);
 
+  console.log('\n========== 九、干跑模式（内部自检通道）不落库 ==========');
+  // 云调用没有微信上下文，只能靠干跑模式验证"云端算的分 == 客户端算的分"。
+  // 它必须只算不写 —— 否则自检会往真实榜单里塞垃圾分。
+
+  {
+    const pts = circlePoints();
+    const { ev, clientScore } = makeEvent(pts);
+    const db = makeDb();
+    const out = await core.handle(ev, { OPENID: 'o_dry' }, db, { dryRun: true });
+    ok(out.dryRun === true, '出参标记 dryRun=true');
+    ok(db.subs.length === 0, '干跑不写 submissions（不污染审计记录）', '条数=' + db.subs.length);
+    ok(db.scoreRows.size === 0, '干跑不写 scores（不污染榜单）', '条数=' + db.scoreRows.size);
+    ok(out.scoreDelta !== null && Math.abs(out.scoreDelta) <= 0.1,
+      '干跑仍然算出与客户端一致的权威分', 'Δ=' + out.scoreDelta);
+    ok(out.score === clientScore, '干跑给出的分与客户端分相同', out.score + ' vs ' + clientScore);
+  }
+  {
+    // 干跑模式下重放检测必须跳过 —— 读到的真实历史会让自检结果不确定
+    const pts = circlePoints();
+    const { ev } = makeEvent(pts);
+    const db = makeDb();
+    db.subs.push({ openid: 'someone', sig: ev.sig, sigHash: 'x', score: 1, verdict: 'ok', ts: Math.floor(Date.now() / 1000) });
+    const out = await core.handle(ev, { OPENID: 'o_dry' }, db, { dryRun: true });
+    ok(out.replay === false, '干跑不做重放检测（结果确定）');
+  }
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
   process.exit(fail ? 1 : 0);
 })().catch(e => {
