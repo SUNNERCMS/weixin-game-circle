@@ -1,5 +1,6 @@
 {
   "description": "谁最圆 v0.5",
+  "cloudfunctionRoot": "cloudfunctions/",
   "packOptions": {
     "ignore": [
       {
@@ -37,6 +38,10 @@
       {
         "type": "folder",
         "value": ".weixin-minigame-helper"
+      },
+      {
+        "type": "folder",
+        "value": "cloudfunctions"
       }
     ],
     "include": []

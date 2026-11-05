@@ -76,16 +76,18 @@ ok(!/\bwx\.request\b/.test(odCode), 'index.js 不发网络请求（开放数据�
 
 console.log('\n========== 四、打包产物边界 ==========');
 
-const cfDir = path.join(root, 'cloudfunctions');
-ok(!fs.existsSync(cfDir), '项目里没有 cloudfunctions/ 目录（打包产物不含云函数源码）');
+const projCfg = JSON.parse(fs.readFileSync(path.join(root, 'project.config.json'), 'utf8'));
+const ignoreVals = ((projCfg.packOptions && projCfg.packOptions.ignore) || []).map(x => x.value);
 
-const packIgnore = (JSON.parse(fs.readFileSync(path.join(root, 'project.config.json'), 'utf8'))
-  .packOptions && JSON.parse(fs.readFileSync(path.join(root, 'project.config.json'), 'utf8'))
-  .packOptions.ignore) || [];
-const ignoreVals = packIgnore.map(x => x.value);
 ok(ignoreVals.includes('index.html'), 'index.html 被排除出小程序包（浏览器端调试文件）');
 ok(!(odDir && ignoreVals.includes(dirName)),
   '开放数据域目录未被误排除（排掉它开放数据域就不加载了）', dirName || '(无)');
+
+// 云函数源码含服务端逻辑，不该进客户端包。
+// 不变式不是"目录不存在"（P2 起它就存在了），而是"目录在，就必须被排除"。
+// 靠开发者工具的隐式默认行为不算数 —— 显式声明才可验证。
+ok(ignoreVals.includes('cloudfunctions'),
+  'cloudfunctions/ 被显式排除出小程序包（服务端源码不进客户端包）');
 
 console.log('\n========== 五、sharedCanvas 的降级矩阵 ==========');
 

@@ -28,6 +28,8 @@
 │   └── scoring.js                         // 评分引擎唯一实现（主域与云函数共用，UMD）
 ├── open-data
 │   └── index.js                           // 开放数据域入口（好友榜数据只在这里读得到）
+├── cloudfunctions
+│   └── score                              // 云函数：权威算分（scoring.js 由 npm run sync:cloud 同步而来）
 ├── .eslintrc.js                           // 代码规范
 ├── game.js                                // 游戏主入口（逻辑 + 渲染 + 状态；评分引擎已外提）
 ├── game.json                              // 游戏运行时配置
@@ -56,6 +58,8 @@
 |---|---|---|---|
 | 单元测试 | `cd ../who-is-circle-tests && npm test` | 无（纯 Node） | 评分引擎、扣分明细恒等式、无效判定、13 档段位、防作弊与不误伤真人、重放检测、存档自校验 |
 | 开放数据域守卫 | `cd ../who-is-circle-tests && npm run test:opendata` | 无（纯 Node） | `game.json` 的 `openDataContext` 指向的目录真实存在、开放数据域沙盒隔离（不越界调好友 API / 不引远程 URL）、打包产物边界 |
+| 云函数契约 | `cd ../who-is-circle-tests && npm run test:cloudfn` | 无（纯 Node） | 云函数里的 `scoring.js` 与 `shared/scoring.js` **sha256 相同**（算法不许漂移）、云函数不内联评分引擎、不引用小游戏主域符号、`cloudfunctions/` 被排除出小程序包 |
+| 云函数行为 | `cd ../who-is-circle-tests && node unit/cloudcore.test.js` | 无（纯 Node，内存 db） | 云端分 = 客户端分（误差 ≤ 0.1）、云端**重算**而非采信上报分（谎报 999.9 无效）、重放检测、速率限制、最高分只升不降、客户端 `guard` 不参与判定、`clock_drift` 的取舍在出参里看得见 |
 | 端到端 | `cd ../who-is-circle-tests && npm run test:e2e` | 开发者工具预览服务 + `agent-browser` + Pillow | 笔迹单色（无彩色分段）、结算按钮、新纪录徽章、**结算卡片无诊断红字**、落笔重画清屏、首页按钮 |
 | 语法 | `node --check game.js` | 无 | 语法检查 |
 
@@ -159,6 +163,33 @@ game.js        主域：wx.getOpenDataContext().canvas → ctx.drawImage(sharedC
 
 > 当前进度：**P1 骨架**。`open-data/index.js` 只画一块占位内容，用来验证「这条路通不通」；
 > 真正的好友榜渲染在 P4，入口与榜面 UI 在 P5。
+
+## 云端算分（好友榜的权威分）
+
+榜上的分**不是客户端算的**，是云函数 `score` 算的。客户端那份只作交叉校验参考
+（出参 `scoreDelta` 就是两者之差）。
+
+```
+cloudfunctions/score/
+├── index.js    入口：初始化 SDK、确保集合存在、适配 db 接口
+├── core.js     全部逻辑（**不依赖 wx-server-sdk** → 可被单测直接跑，用内存 db 覆盖全流程）
+└── scoring.js  构建产物：npm run sync:cloud 从 shared/scoring.js 拷贝
+```
+
+**两份算法必须永远一致** —— 云端改了分、客户端没改，比分就对不上。
+所以拷贝是机械的、不允许手改，一致性由 sha256 守卫测试盯着
+（`who-is-circle-tests/unit/cloudfn.test.js`）。改完 `shared/scoring.js` 记得 `npm run sync:cloud` 再部署。
+
+**云端只信自己重算的**：客户端上报的 `guard` **不参与判定**，只回显供审计对比 ——
+客户端代码在攻击者手里，"客户端说自己有问题"的判断能被摘掉。
+
+**`clock_drift` 在云端不生效**（上传协议不带回调时刻 `h`）——这是**明确取舍**，
+出参 `cloudGuard.note` 里明写着，详见 `cloudfunctions/score/README.md`。
+
+**集合不需要手工建**：入口会在首次调用时自动创建。索引也不需要 ——
+云数据库的 `orderBy` 强制要求索引，而 SDK 没有建索引的接口，所以查询刻意只用 `where` + 内存排序。
+
+> 当前进度：**P2**。客户端的上报链路是 P3，榜面是 P4/P5。
 
 ## 可测试化
 

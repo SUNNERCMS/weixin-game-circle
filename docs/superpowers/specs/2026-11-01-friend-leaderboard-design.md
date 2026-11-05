@@ -174,14 +174,31 @@ who-is-circle-tests/
 ```js
 {
   ok: true,
-  verdict: 'ok' | 'shadow' | 'reject',   // 复用现有 judge() 三档语义
+  // 复用现有 judge() 的**四档**语义（不是三档）：
+  //   ok         正常
+  //   shadow     行为异常，成绩不计入最佳
+  //   unverified 存在可疑特征但未达 shadow 门槛 —— 分数给，但标记为"未完全验证"
+  //   reject     拒绝
+  // （P2 实作时发现 judge() 实际有第四档 unverified，本文档原先漏写，已更正）
+  verdict: 'ok' | 'shadow' | 'unverified' | 'reject',
   score: 92.4,          // 云端权威分
   level: 4,             // 段位索引
   newBest: true,        // 是否刷新该玩家的云端历史最佳
   best: 92.4,           // 云端认定的历史最佳
-  reason: ''            // reject 时的说明文案
+  reason: '',           // reject 时的说明文案
+  cloudGuard: {         // 云端自己的防作弊判定
+    risk: 0, hits: [], hard: [],
+    note: '判定完全基于云端重算；clock_drift 未独立复核（上传协议不含回调时刻 h）'
+  },
+  clientGuard: {...},   // 客户端上报的 guard，原样回显供审计对比（**不参与判定**）
+  scoreDelta: 0,        // 云端分 − 客户端分，交叉校验用
+  replay: false
 }
 ```
+
+**客户端上报的 `guard` 不参与判定**，只回显供审计对比。
+理由：客户端代码在攻击者手里，"客户端说自己有问题"的判断能被摘掉；
+云端只能信自己重算出来的数据。
 
 **云函数内部流程**
 
@@ -292,7 +309,7 @@ who-is-circle-tests/
 
 | 已知限制 | 说明 |
 |---|---|
-| `clock_drift` 在云端不生效 | `guardCheck(raw, fit, score, sig)` 的入参 `raw` 是 `[{t, h, x, y}]`（`h` = 回调执行时刻），而上传协议只有 `pts`（x/y/t，`encodePts` 不编码 `h`）。云端若以 `h := t` 构造 raw，`evDur === hDur` 恒成立 → **该信号恒不命中**。P2 必须二选一：① 上传 `h`（需新增 `encodeRaw`/`decodeRaw`，载荷约翻倍）；② 接受云端少这一道防线，并在云函数文档中明说。**不能默默失效**——云端会少一道防线而无人察觉。 |
+| `clock_drift` 在云端不生效 | `guardCheck(raw, fit, score, sig)` 的入参 `raw` 是 `[{t, h, x, y}]`（`h` = 回调执行时刻），而上传协议只有 `pts`（x/y/t，`encodePts` 不编码 `h`）。云端若以 `h := t` 构造 raw，`evDur === hDur` 恒成立 → **该信号恒不命中**。P2 必须二选一：① 上传 `h`（需新增 `encodeRaw`/`decodeRaw`，载荷约翻倍）；② 接受云端少这一道防线，并在云函数文档中明说。**不能默默失效**——云端会少一道防线而无人察觉。<br>**✅ 已决策（P2）**：选 **②**。理由：`h` 是客户端自报的回调时刻，攻击者连它一起伪造即可，① 防的是君子不是小人，却要付 33% 载荷；而"少一道防线"已落到**协议层** —— 出参 `cloudGuard.note` 明写"clock_drift 未独立复核"，调用方能直接看到，不存在默默失效。 |
 
 ### 7.3 一致性不变式
 

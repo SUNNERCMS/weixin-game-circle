@@ -1,0 +1,9 @@
+{
+  "name": "score",
+  "version": "1.0.0",
+  "description": "好友榜云函数：权威算分 + 防作弊 + 重放检测",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~4.0.2"
+  }
+}
