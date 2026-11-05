@@ -118,5 +118,54 @@ const gg = S.guardCheck(raw, S.evaluate(pts).fit, S.evaluate(pts).score, {});
 ok(gg && typeof gg.risk === 'number' && Array.isArray(gg.hits),
   'guardCheck 收 [{t,h,x,y}] → {hard,risk,hits}', `risk=${gg.risk}`);
 
+console.log('\n========== 九、编码往返精度（上传链路的生命线）==========');
+// 客户端算分 → 编码上传 → 云端解码重算，两边必须对得上。
+//
+// 这里曾经有个真实的 bug：0.1px 的量化精度沿 240 帧累积，高分段往返误差可达 0.5 分，
+// 连"最高分存档自校验"（容差 0.15）都会误杀 —— 100 分段 43.7% 的玩家丢最高分。
+// 这类 bug 肉眼看不见、e2e 也测不出来（e2e 用的是未编码的原始点），
+// 只能靠"编码→解码→重算"的往返测试钉住。
+{
+  const levels = [
+    { name: '满分档(轻噪)', noise: 0.35 },
+    { name: '高分档', noise: 0.8 },
+    { name: '中分档', noise: 1.6 },
+    { name: '普通档', noise: 3.0 }
+  ];
+  const TRIALS = 120;
+  let worstAll = 0, overTol = 0, overPointOne = 0, total = 0, payloadMax = 0;
+
+  for (const lv of levels) {
+    let worst = 0;
+    for (let k = 0; k < TRIALS; k++) {
+      const p = circle(375, 700, 180, { noise: lv.noise, jitter: 4 });
+      const r1 = S.evaluate(p);
+      if (!r1.valid) continue;
+      const enc = S.encodePts(p);
+      const r2 = S.evaluate(S.decodePts(enc));
+      if (!r2.valid) continue;
+      const d = Math.abs(r1.score - r2.score);
+      // 分数只有 1 位小数，差值量化到 1e-4 再比 —— 否则 99.8-99.7=0.10000000000000853
+      // 这种浮点噪声会把"恰好 0.1"判成"超过 0.1"
+      const dq = Math.round(d * 1e4) / 1e4;
+      if (dq > worst) worst = dq;
+      if (dq > 0.15) overTol++;          // 存档自校验的容差
+      if (dq > 0.1) overPointOne++;     // P2 云端对拍的验收线
+      if (dq > worstAll) worstAll = dq;
+      const len = JSON.stringify(enc).length;
+      if (len > payloadMax) payloadMax = len;
+      total++;
+    }
+    ok(worst <= 0.1, `${lv.name} 往返误差 ≤ 0.1`, `最大=${worst.toFixed(4)}`);
+  }
+
+  ok(total === levels.length * TRIALS, '样本量够（各档 '+TRIALS+' 笔）', '共 '+total+' 笔');
+  ok(overTol === 0, '没有任何一笔会触发"最高分存档自校验"作废（容差 0.15）', '越界 '+overTol+' 笔');
+  ok(overPointOne === 0, '没有任何一笔超过 P2 云端对拍验收线（0.1）', '越界 '+overPointOne+' 笔');
+  ok(worstAll <= 0.1, '全局最大往返误差 ≤ 0.1', '最大=' + worstAll.toFixed(4));
+  ok(payloadMax <= 8192, '单条笔迹载荷 ≤ 8KB（pending 队列每条 2–10KB 的预算内）',
+    '最大=' + payloadMax + ' 字节');
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
 process.exit(fail ? 1 : 0);
