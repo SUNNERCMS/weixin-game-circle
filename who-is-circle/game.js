@@ -368,6 +368,10 @@
         set: function (k, v) { env.setStorageRaw(k, v); }
       },
       now: function () { return env.wallNow(); },   // 墙钟：托管数据的 update_time 要 Unix 秒
+      // 诊断日志出口：真机（预览模式）看不到别的日志，链路断在哪只能靠这几行判断
+      log: function (msg) {
+        try { if (typeof console !== 'undefined' && console.log) console.log(msg); } catch (e) { /* ignore */ }
+      },
       key: CFG.CLOUD_KEY,
       highScore: GUARD_CFG.HIGH_SCORE,   // 95：复用已有的「高分从严」阈值，不另造一个
       timeoutMs: CFG.CLOUD_TIMEOUT_MS
@@ -1148,13 +1152,40 @@
   // ---- 主页 ----
   // 开放数据域的离屏画布：懒取一次并缓存（getOpenDataContext 不便宜，且结果不变）
   var odCanvas = null;
-  var odCanvasTried = false;
+  var odCanvasTried = 0;
+  // 开放数据域是**异步**起来的：主域第一帧时它可能还没初始化完，
+  // 这时 wx.getOpenDataContext().canvas 还是 null —— 早一次就永久放弃了。
+  // 所以这里失败要重试（拿到 canvas 对象后就不用再取，只要等它有宽高）。
+  var OD_GET_RETRY = 180;   // 最多重试 180 帧（约 3 秒），之后不再取
+  var odLogState = 0;       // 0=还没结论 1=已连通 2=已放弃
+  function odLog(msg) {
+    try { if (typeof console !== 'undefined' && console.log) console.log('[open-data] ' + msg); } catch (e) { /* ignore */ }
+  }
   function getOdCanvas() {
-    if (!odCanvasTried) {
-      odCanvasTried = true;
+    if (!odCanvas && odCanvasTried < OD_GET_RETRY) {
+      odCanvasTried++;
       odCanvas = env.getSharedCanvas();
     }
     return odCanvas;
+  }
+
+  // 开放数据域贴不上时画一块**明确不同**的兜底块。
+  //
+  // 为什么要可见：P1 要在真机上确认「开放数据域通路通不通」，
+  // 而"什么都没画"同时对应三种原因（通路没通 / 尺寸为 0 / 画到屏幕外）——没法判定。
+  // 画出来就是二值判定：深蓝块 = 通了，灰块 = 没通。
+  // 这块占位内容 P4/P5 会被真正的榜面替换掉，属于临时脚手架。
+  function drawOdFallback(c) {
+    var r = CFG.OD_PLACEHOLDER;
+    c.save();
+    c.fillStyle = 'rgba(110,104,94,0.10)';
+    c.fillRect(r.x, r.y, r.w, r.h);
+    c.strokeStyle = 'rgba(110,104,94,0.35)';
+    c.lineWidth = 2;
+    c.strokeRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
+    fillText(c, '开放数据域未连通', r.x + r.w / 2, r.y + r.h / 2 - 12, 'bold 30px sans-serif', COL.grayText);
+    fillText(c, '（占位 · P1 待真机验证）', r.x + r.w / 2, r.y + r.h / 2 + 22, '24px sans-serif', COL.grayText);
+    c.restore();
   }
 
   // 把开放数据域画好的内容贴到主域画布
@@ -1162,7 +1193,19 @@
   // 主域也不必和它约定死尺寸（少一份会漂移的常量）。
   function drawOpenData(c) {
     var sc = getOdCanvas();
-    if (!sc || !sc.width || !sc.height) return;
+    if (!sc || !sc.width || !sc.height) {
+      // 没通 → 画兜底块，让"通没通"一眼可判；日志里也留一句，断在哪一目了然
+      if (odLogState === 0 && odCanvasTried >= OD_GET_RETRY) {
+        odLogState = 2;
+        odLog('放弃：重试 ' + odCanvasTried + ' 次仍未拿到可用的 sharedCanvas');
+      }
+      drawOdFallback(c);
+      return;
+    }
+    if (odLogState !== 1) {
+      odLogState = 1;
+      odLog('已连通 sharedCanvas ' + sc.width + '×' + sc.height);
+    }
     var r = CFG.OD_PLACEHOLDER;
     var ar = sc.width / sc.height;
     var w = r.w, h = r.w / ar;
@@ -1173,6 +1216,7 @@
       c.drawImage(sc, x, y, w, h);
     } catch (e) {
       // 贴不上就当没有这一块 —— 开放数据域是可选能力，不能因此影响主玩法
+      drawOdFallback(c);
     }
   }
 

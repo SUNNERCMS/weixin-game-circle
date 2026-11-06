@@ -333,6 +333,34 @@ who-is-circle-tests/
 
 **pending 队列约束**：本地存储单 key 1 MB、总 10 MB。队列上限设 5 条，超出丢弃最旧。
 
+**⚠️ P3 实施时发现的、文档与实现不一致的一处（必须在 P4 之前定掉）**
+
+本文档 §7.4 说「云函数判定无效 ⇒ 不上榜」，但 P2 的云端实现（`cloudfunctions/score/core.js`）是
+**无论 verdict 是什么都会把分写进 `scores`**（只有 dryRun 与速率限制拒绝不写）：
+
+```js
+var verdict = S.judge(r, g, replay, false);   // ok / shadow / unverified / reject
+...
+if (!dryRun) {
+  await db.addSubmission(...);                // submissions 每次都写（含被拒的）
+  await db.setScore(OPENID, { score: nextBest, ... });   // ← verdict 没有参与判断
+}
+```
+
+后果：被判 `shadow` 的成绩照样会出现在好友榜上（只要比当前最高分高），而 §7.4 与 §5.1 的
+「shadow 成绩不计入最佳」对不上。
+
+P4 读榜之前必须二选一：
+
+- **① 云端拦**：verdict ∈ {shadow, reject} 时不写 `scores`（只有 `scores` 与 `submissions` 分开写，
+  `submissions` 仍留审计记录）—— 语义最干净，但要改 P2 的云函数并重新部署；
+- **② 榜只作参考**：榜上照实显示云端算的分，另用 `submissions` 的 verdict 做「未验证」角标 ——
+  不用改云函数，但好友榜上会出现被判无效的成绩。
+
+客户端侧（P3）已经按 §7.4 实现了：云端判无效 ⇒ 不弹新纪录徽章、`H` 不变、不写托管数据。
+不一致的只有**云端 `scores` 集合**这一处。
+
+
 ---
 
 ## 八、UI 规格

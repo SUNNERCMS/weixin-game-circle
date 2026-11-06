@@ -258,6 +258,76 @@ cloudfunctions/score/
 
 > 当前进度：**P3 完成**。榜面渲染是 P4（开放数据域），入口与榜面 UI 是 P5。
 
+## 真机验证（P1 开放数据域 / P3 云端链路）
+
+浏览器**读不到**开放数据域、没有微信上下文，所以下面两件事只能真机验。
+
+### 生成真机预览码
+
+```bash
+CLI=/Applications/wechatwebdevtools.app/Contents/MacOS/cli
+cd who-is-circle
+$CLI preview --project "$PWD" --qr-format image --qr-output "$PWD/preview-qrcode.png"
+```
+
+二维码**必须落在项目目录内**（落在 `/tmp` 会被忽略）。
+
+**预览模式没有日志**。要排查就用真机调试：
+
+```bash
+$CLI auto --project "$PWD" --trust-project
+```
+
+IDE 弹窗后手机扫码，主域与开放数据域的 console 都能看到。
+
+### P1：开放数据域通路
+
+首页那块占位是**二值判定**：
+
+| 看到什么 | 含义 |
+|---|---|
+| 深蓝底 + 「好友榜 · P1 占位」 | 通路**通了** |
+| 灰底 + 「开放数据域未连通」 | 通路**没通**（API 不可用 / 基础库太老 / `game.json` 配错） |
+
+日志里对应两行：`[open-data] 已连通 sharedCanvas 414×214` 或 `[open-data] 放弃：重试 180 次仍未拿到可用的 sharedCanvas`。
+
+> 早期版本这里是**静默**的：贴不上就什么都不画，"没看到占位块"同时对应三种原因，没法判定。
+> 现在画一块明显不同的兜底块，并把「拿不到就永久放弃」改成**重试 180 帧**（开放数据域是异步起来的，
+> 主域第一帧时它可能还没初始化完 —— 早一次放弃就永远贴不上了）。
+
+### P3：真实 OPENID 落库
+
+真机调试连上，用**手机上的微信号**（真实登录账号）画一个**破纪录**的圆：
+
+- 首次玩没有本地最佳分 → 任何分都算破纪录 → 触发上报
+- 想确定走同步路径：**画 ≥95 分的圆**（<95 走异步，异步失败不阻塞 UI，界面上看不出区别）
+
+日志里按顺序会出现三行（`[cloud]` 前缀）：
+
+```
+[cloud] → 请求云端算分 score=97.3 pts=88 模式=同步
+[cloud] ← 云端结论 status=ok score=97.3 verdict=ok 托管数据=成功
+[cloud] 托管数据写入成功 key=circle score=97.3
+```
+
+云端不可达时第二行会是 `status=unavailable reason=...`，并多一行 `[cloud] pending 入队：当前 1 条`。
+
+**判定表**（三个地方对得上才算通）：
+
+| 看哪里 | 期望 | 怎么查 |
+|---|---|---|
+| 云函数日志 | 一条 `score` 调用 + 返回的 verdict | 开发者工具 →「云开发」→ 云函数 `score` → 日志 |
+| 数据库 `scores` | 一条 `_id` = **真实 OPENID**（不是 `__selftest__`）的记录 | 云开发控制台 → 数据库 → `scores` |
+| 数据库 `submissions` | 对应提交，含 `verdict` 字段 | 同上 → `submissions` |
+| 托管数据 | key=`circle`，`wxgame.score` = 真实分 ×10 | 云开发控制台 → 存储 → 用户数据 |
+
+**两个容易误判的点**：
+
+1. **徽章弹不弹不能作为链路通不通的依据。** 开发版里云端结论只作提示（DEV 豁免），徽章照弹 ——
+   "徽章弹了"不证明云调用成功（可能是 unavailable 降级）。真正的判据是**数据库里有没有那条真实 OPENID 的记录**。
+2. **`scores` 里有记录 ≠ 这局有效。** 云端 `core.js` 现在无论 verdict 是什么都会把分写进 `scores`
+   （只有 dryRun 和限流拒绝不写），与设计文档「shadow 成绩不计入最佳」不一致 —— 判有效性要看 `submissions` 的 `verdict`。
+
 ## 可测试化
 
 纯函数集中在 `shared/scoring.js`（24 个导出符号），`game.js` 末尾以 `module.exports` 转出同一批符号

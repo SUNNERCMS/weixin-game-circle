@@ -30,9 +30,11 @@ function makeDeps(over = {}) {
   const calls = [];
   const hosted = [];
   const store = {};
+  const logs = [];
   let deferred = null;
 
   const deps = {
+    log: function (msg) { logs.push(String(msg)); },
     callFunction: function (name, data) {
       calls.push({ name, data });
       if (over.deferred) {
@@ -63,7 +65,7 @@ function makeDeps(over = {}) {
   };
 
   return {
-    deps, calls, hosted, store,
+    deps, calls, hosted, store, logs,
     resolveDeferred: (v) => deferred && deferred.resolve(v),
     rejectDeferred: (e) => deferred && deferred.reject(e),
     pending: () => { const s = store[Cloud.PENDING_KEY]; return s ? JSON.parse(s) : []; }
@@ -285,6 +287,50 @@ const payloadOf = (score, over = {}) => Object.assign({
     const dt = Date.now() - t0;
     ok(r.status === 'unavailable', '云函数不返回 → 超时后降级为 unavailable', 'status=' + r.status);
     ok(dt < 2000, '超时在预算内（不会把结算卡死）', '耗时=' + dt + 'ms');
+  }
+
+  console.log('\n========== 八、诊断日志（真机排查全靠它） ==========');
+
+  {
+    // 真机（预览模式）里除了这几行什么都看不到 —— 链路断在哪只能靠它，
+    // 所以「每个关键节点都留下一行」本身就是要锁住的行为。
+    const h = makeDeps({ callResult: { verdict: 'ok', score: 96.5, level: 2 } });
+    const c = Cloud.createClient(h.deps);
+    await c.submitIfRecord(payloadOf(97, { clientBest: 90 }));
+    await tick();
+
+    const all = h.logs.join('\n');
+    ok(h.logs.length >= 3, '破纪录后至少留下 3 行日志（请求 / 结论 / 托管数据）',
+      '共 ' + h.logs.length + ' 行');
+    ok(all.indexOf('[cloud] → 请求云端算分') >= 0, '有「请求发出」这一行');
+    ok(/模式=同步/.test(all), '同步路径在日志里标得出来（真机上分不清同步异步）');
+    ok(all.indexOf('[cloud] ← 云端结论') >= 0, '有「云端结论」这一行');
+    ok(/status=ok/.test(all), '结论里带 status');
+    ok(all.indexOf('[cloud] 托管数据写入成功') >= 0, '有「托管数据写入结果」这一行');
+    ok(all.indexOf('pts=') >= 0, '请求日志带点数（能对上发了多少笔迹）');
+    ok(all.indexOf('pts=') >= 0 && all.indexOf('clientBest') < 0,
+      '日志里不带 clientBest 之类无关字段');
+  }
+
+  {
+    // 云端不可达也要留日志 —— 「什么都没发生」是最难查的一种情况
+    const h = makeDeps({ callResult: 'reject' });
+    const c = Cloud.createClient(h.deps);
+    await c.submitIfRecord(payloadOf(97, { clientBest: 90 }));
+    await tick(); await tick();
+    const all = h.logs.join('\n');
+    ok(/status=unavailable/.test(all), '云端不可达 → 日志里写明 unavailable');
+    ok(all.indexOf('pending 入队') >= 0, '进 pending 队列也留日志');
+  }
+
+  {
+    // 异步路径同样要留日志（分数低走异步，界面上看不出区别，只能靠日志）
+    const h = makeDeps({ callResult: { verdict: 'ok', score: 70.2, level: 1 } });
+    const c = Cloud.createClient(h.deps);
+    await c.submitIfRecord(payloadOf(70, { clientBest: 60 }));
+    await tick();
+    const all = h.logs.join('\n');
+    ok(/模式=异步/.test(all), '异步路径在日志里标得出来');
   }
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);

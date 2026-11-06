@@ -97,6 +97,8 @@
    *   setUserCloudStorage(payload) → Promise  写托管数据（没有就传 null）
    *   storage { get(key)→string|null, set(key, str) }  pending 队列的存取
    *   now() → ms
+   *   log(msg)  可选。诊断日志出口 —— 真机上看不到 console 时只能靠它判断链路断在哪，
+   *             所以默认给一个空函数，由调用方决定往哪儿写
    *   key / highScore / maxPending / timeoutMs  可选，覆盖默认值
    *   enabled  布尔。false = 没开云（浏览器预览 / 未初始化云环境），
    *             此时 submitIfRecord 直接返回 off，玩法完全不受影响。
@@ -107,6 +109,7 @@
     var setUserCloudStorage = deps.setUserCloudStorage || null;
     var storage = deps.storage || { get: function () { return null; }, set: function () {} };
     var now = deps.now || function () { return Date.now(); };
+    var log = deps.log || function () {};
     var key = deps.key || DEFAULT_KEY;
     var highScore = (typeof deps.highScore === 'number') ? deps.highScore : DEFAULT_HIGH;
     var maxPending = (typeof deps.maxPending === 'number') ? deps.maxPending : DEFAULT_MAX_PENDING;
@@ -134,6 +137,7 @@
       list.push(entry);
       while (list.length > maxPending) list.shift();
       savePending(list);
+      log('[cloud] pending 入队：当前 ' + list.length + ' 条（上限 ' + maxPending + '）');
       return list.length;
     }
 
@@ -145,8 +149,10 @@
       var value = buildHostingValue(score, level, now() / 1000);
       var payload = { KVDataList: [{ key: key, value: value }] };
       return Promise.resolve(setUserCloudStorage(payload)).then(function () {
+        log('[cloud] 托管数据写入成功 key=' + key + ' score=' + score);
         return true;
       }, function (e) {
+        log('[cloud] 托管数据写入失败 key=' + key + ' err=' + msg(e));
         return false;
       });
     }
@@ -207,14 +213,24 @@
     }
 
     // 一次完整的「问云端」。**永远 resolve，不 reject** —— 上报失败不该变成玩法异常。
-    function doCall(payload) {
+    // sync 只影响日志措辞（同步=结算页等结论，异步=不阻塞 UI），分支逻辑在 submitIfRecord。
+    function doCall(payload, sync) {
       if (!enabled) {
         return Promise.resolve({ status: 'off', score: payload.score, reason: '未开启云端' });
       }
+      var ptsN = (payload.pts && payload.pts.length) ? payload.pts.length : 0;
+      log('[cloud] → 请求云端算分 score=' + payload.score + ' pts=' + ptsN +
+          ' 模式=' + (sync ? '同步' : '异步'));
       return withTimeout(callCloud(payload), timeoutMs).then(function (res) {
         return applyVerdict(res, payload);
       }, function (e) {
         return { status: 'unavailable', score: payload.score, reason: msg(e) };
+      }).then(function (final) {
+        log('[cloud] ← 云端结论 status=' + final.status + ' score=' + final.score +
+            (final.verdict ? ' verdict=' + final.verdict : '') +
+            (final.reason ? ' reason=' + final.reason : '') +
+            (typeof final.hosted === 'boolean' ? ' 托管数据=' + (final.hosted ? '成功' : '失败') : ''));
+        return final;
       });
     }
 
@@ -267,13 +283,13 @@
 
       if (score >= highScore) {
         // 同步：结算页等这个结论（高分才有防作弊价值，值得等）
-        return doCall(payload).then(settled, function (e) {
+        return doCall(payload, true).then(settled, function (e) {
           return settled({ status: 'unavailable', score: payload.score, reason: msg(e) });
         });
       }
 
       // 异步：不阻塞 UI
-      doCall(payload).then(settled, function (e) {
+      doCall(payload, false).then(settled, function (e) {
         return settled({ status: 'unavailable', score: payload.score, reason: msg(e) });
       });
       return Promise.resolve({ status: 'pending', score: score });
@@ -288,15 +304,18 @@
       if (!enabled) return Promise.resolve(0);
       var list = loadPending();
       if (!list.length) return Promise.resolve(0);
+      log('[cloud] 补传 pending：共 ' + list.length + ' 条');
       var flushed = 0;
       function step(i) {
         if (i >= list.length) {
           savePending([]);
+          log('[cloud] 补传完成：成功 ' + flushed + ' 条');
           return Promise.resolve(flushed);
         }
-        return doCall(list[i]).then(function (final) {
+        return doCall(list[i], false).then(function (final) {
           if (final.status === 'unavailable') {
             savePending(list.slice(i));    // 还没传成功，留着下次再来
+            log('[cloud] 补传中断：已成功 ' + flushed + ' 条，剩 ' + (list.length - i) + ' 条下次再传');
             return flushed;
           }
           flushed++;
