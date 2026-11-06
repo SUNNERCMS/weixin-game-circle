@@ -205,8 +205,24 @@ cloudfunctions/score/
 ```bash
 CLI=/Applications/wechatwebdevtools.app/Contents/MacOS/cli
 cd who-is-circle
-$CLI cloud functions deploy --env cloud1-d6grvs82r581230b2 --names score --project "$PWD"
+$CLI cloud functions deploy --env cloud1-d6grvs82r581230b2 --names score --remote-npm-install --project "$PWD"
 ```
+
+**⚠️ `--remote-npm-install` 不能省**（2026-11-05 踩过）：
+`wx-server-sdk` 是在**云端**装的，本地 `cloudfunctions/score/` 里没有 `node_modules`。
+不带这个参数部署 = 只上传代码、不装依赖 → 云函数直接报
+`Cannot find module 'wx-server-sdk'`，**所有云调用全挂**（而且界面看不出异常，只是静默降级）。
+
+另外：部署后函数会短暂处于 `Updating` 状态，此时再部署会报
+`当前函数处于Updating状态，无法进行此操作` —— 等十几秒重试即可。
+
+部署完可以这样确认线上代码是新的（走 `__selftest` 干跑通道，**不落库、不污染榜单**）：
+
+```bash
+cd ../who-is-circle-tests && npm run verify:cloud
+```
+
+出参里的 `best` 字段是判断依据 —— 有 `best` 说明新代码已生效。
 细节见 `cloudfunctions/score/README.md`。
 
 > 当前进度：**P2**。客户端的上报链路是 P3，榜面是 P4/P5。

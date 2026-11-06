@@ -194,3 +194,23 @@ npm run sync:cloud                                    # 先同步评分引擎
 
 刚创建函数时它处于 `Creating` 状态，直接部署会报
 `FailedOperation.UpdateFunctionCode：当前函数处于Creating状态` —— 稍等十几秒重试即可。
+**更新**已有函数同理会报 `当前函数处于Updating状态` —— 等十几秒重试。
+
+### ⚠️ `--remote-npm-install` 不能省
+
+`wx-server-sdk` 是在**云端**装的，本地 `cloudfunctions/score/` 里没有 `node_modules`。
+不带这个参数部署 = 只上传代码、不装依赖 → 云函数直接报
+`Cannot find module 'wx-server-sdk'`，**所有云调用全挂**。
+
+而且这个故障在游戏里**看不出来**：客户端把云调用失败当成「服务不可达」静默降级，
+界面照常显示分数、只是这一局不上榜。唯一线索是日志里的
+`[cloud] ← 云端结论 status=unavailable reason=...`。
+
+### 部署完怎么确认线上代码是新的
+
+```bash
+cd ../who-is-circle-tests && npm run verify:cloud
+```
+
+走 `__selftest` 干跑通道（**不落库、不污染榜单**），出参里有没有 `best` 字段
+就是新代码有没有生效的判据。
