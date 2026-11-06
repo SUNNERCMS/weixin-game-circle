@@ -333,6 +333,50 @@ const payloadOf = (score, over = {}) => Object.assign({
     ok(/模式=异步/.test(all), '异步路径在日志里标得出来');
   }
 
+  console.log('\n========== 九、托管数据写「云端权威最高分」并带 verdict 标记 ==========');
+  // 好友榜读的是托管数据，所以托管数据里写什么，榜上就是什么：
+  //  - score 必须写**云端权威最高分**（res.best），不是本局分 —— wxgame.score 是
+  //    小游戏中心/排行榜的标准字段，语义就是"最好成绩"；写本局分还会让
+  //    score（按本局）与 level（按最高分）两个字段口径打架
+  //  - v 字段带 verdict，设计文档要求 unverified 的分要给但标出"未完全验证"
+
+  {
+    // 云端返回：本局 88 分，但历史最高 97.83
+    const h = makeDeps({ callResult: { verdict: 'ok', score: 88.0, best: 97.83, level: 3 } });
+    const c = Cloud.createClient(h.deps);
+    await c.submitIfRecord(payloadOf(97, { clientBest: 90 }));
+    ok(h.hosted.length === 1, '写了一次托管数据', 'hosted=' + h.hosted.length);
+    const v = JSON.parse(h.hosted[0].KVDataList[0].value);
+    ok(v.wxgame.score === 978, 'wxgame.score 写的是**云端权威最高分**（97.83×10），不是本局分 88',
+      'v=' + v.wxgame.score);
+    ok(v.level === 3, 'level 与最高分同口径', 'level=' + v.level);
+    ok(v.v === 'ok', '带 verdict 标记 v=ok', 'v=' + v.v);
+    ok(Object.keys(v.wxgame).length === 2, 'wxgame 下仍只有 score / update_time（微信不允许自定义字段）',
+      Object.keys(v.wxgame).join(','));
+  }
+
+  {
+    // unverified：分数给，但要带标记
+    const h = makeDeps({ callResult: { verdict: 'unverified', score: 90.5, best: 90.5, level: 2 } });
+    const c = Cloud.createClient(h.deps);
+    await c.submitIfRecord(payloadOf(90, { clientBest: 80 }));
+    await tick(); await tick();
+    ok(h.hosted.length === 1, 'unverified 也写托管数据（分数给）', 'hosted=' + h.hosted.length);
+    const v = JSON.parse(h.hosted[0].KVDataList[0].value);
+    ok(v.v === 'unverified', '**unverified 带标记**（好友榜要显示"未完全验证"）', 'v=' + v.v);
+    ok(v.wxgame.score === 905, 'unverified 的分照常写进去', 'v=' + v.wxgame.score);
+  }
+
+  {
+    // 云函数没更新、没返回 best → 回退写本局分，并留一行日志提醒
+    const h = makeDeps({ callResult: { verdict: 'ok', score: 97.83, level: 3 } });
+    const c = Cloud.createClient(h.deps);
+    await c.submitIfRecord(payloadOf(97, { clientBest: 90 }));
+    const v = JSON.parse(h.hosted[0].KVDataList[0].value);
+    ok(v.wxgame.score === 978, '云端没返回 best → 回退写本局分（兼容老云函数）', 'v=' + v.wxgame.score);
+    ok(h.logs.join('\n').indexOf('未返回 best') >= 0, '留一行日志提醒云函数该更新了');
+  }
+
   console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
   process.exit(fail ? 1 : 0);
 })().catch(e => {

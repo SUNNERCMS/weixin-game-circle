@@ -138,23 +138,21 @@ async function handle(event, ctx, db, opts) {
   }
 
   // ---- 8. 落库（干跑模式跳过，自检不污染真实榜单）----
-  var best = (mine && typeof mine.score === 'number') ? mine.score : 0;
-  var newBest = r.score > best;
-  var nextBest = newBest ? r.score : best;
+  //
+  // scores 集合的语义：**服务端权威「有效」最高分** + 防作弊状态（速率/时间戳）。
+  // 被判无效的成绩不计入最佳 —— 否则一次作弊就把这个玩家的最高分永久顶住，
+  // 而且客户端本地最佳分与云端 best 会永久对不上。
+  // 口径细节见 buildScoreRow（那里也写了"为什么不能干脆不写"）。
+  var built = buildScoreRow(mine, verdict, r.score, nowSec, recentSubmits);
+  var newBest = built.newBest;
+  var nextBest = built.nextBest;
 
   if (!dryRun) {
     // submissions：每次都写（含被拒的），用于重放检测与审计
     await db.addSubmission(submissionDoc(OPENID, sig, sigHash, r.score, verdict, nowSec, ev, null));
 
-    // scores：仅当更高分才更新分数字段；但速率信息每次都要更新
-    var row = {
-      score: nextBest,
-      level: levelIndex(nextBest),
-      updatedAt: nowSec,
-      lastSubmitAt: nowSec,
-      recentSubmits: recentSubmits.concat([nowSec])
-    };
-    await db.setScore(OPENID, row);
+    // scores：分数字段只在成绩**有效**时更新；速率信息每次都要更新
+    await db.setScore(OPENID, built.row);
   }
 
   var out = result(verdict, r.score, verdict === 'ok' ? '' : verdictText(verdict), nextBest, cloudGuard);
@@ -173,6 +171,50 @@ async function handle(event, ctx, db, opts) {
 }
 
 // ---------- 小工具 ----------
+
+/**
+ * 算出要写进 scores 的那一行。
+ *
+ * 拆成纯函数是为了能**直接测各种 verdict 的落库口径** ——
+ * shadow / unverified 这两档在真实笔迹里很难稳定复现
+ * （judge() 里 `score >= 99 && risk > 0` 就判 shadow，干净笔迹试不出来），
+ * 端到端跑是测不出来的。
+ *
+ * 口径（设计文档 §7.4）：
+ *   - ok / unverified → 分数**计入**最佳（unverified 只是标出来，不是给零分）
+ *   - shadow / reject → 分数**不计入**最佳
+ *
+ * ⚠️ 成绩无效时**不能干脆不写 scores**：recentSubmits 是速率限制的基准，
+ * 不写等于限流失效（可以无限提交刷榜）。所以分数字段沿用原值，防作弊字段照常更新。
+ *
+ * ⚠️ setScore 用的是 set（**覆盖**语义），不传的字段会被清空 ——
+ * 所以无效成绩那一路必须把原值原样带回来。
+ *
+ * @param {object|null} mine  现有的 scores 文档（没有则 null）
+ * @param {string} verdict    本次判定
+ * @param {number} score      本次云端重算出的分
+ * @param {number} nowSec     当前 Unix 秒
+ * @param {Array}  recentSubmits  速率窗口内的提交时间戳
+ * @returns {{row: object, valid: boolean, newBest: boolean, nextBest: number}}
+ */
+function buildScoreRow(mine, verdict, score, nowSec, recentSubmits) {
+  var valid = (verdict === 'ok' || verdict === 'unverified');
+  var best = (mine && typeof mine.score === 'number') ? mine.score : 0;
+  var newBest = valid && score > best;
+  var nextBest = newBest ? score : best;
+  var row = {
+    score: nextBest,
+    // 段位跟着最高分走；成绩无效时沿用原值（set 是覆盖语义，不带回去会被清空）
+    level: valid ? levelIndex(nextBest)
+                 : ((mine && typeof mine.level === 'number') ? mine.level : levelIndex(nextBest)),
+    // updatedAt = 分数最后更新时间：成绩无效说明分数没变，时间也不该动
+    updatedAt: valid ? nowSec
+                      : ((mine && typeof mine.updatedAt === 'number') ? mine.updatedAt : 0),
+    lastSubmitAt: nowSec,
+    recentSubmits: recentSubmits.concat([nowSec])
+  };
+  return { row: row, valid: valid, newBest: newBest, nextBest: nextBest };
+}
 
 // sig 必须是 64 个数字的数组（shapeSig 的输出）。形状不对就当没有 ——
 // 拿不到指纹只是少一道重放防线，不该让整次请求失败。
@@ -234,6 +276,7 @@ function result(verdict, score, reason, best, cloudGuard) {
 
 module.exports = {
   handle: handle,
+  buildScoreRow: buildScoreRow,
   MAX_POINTS: MAX_POINTS,
   REPLAY_SCAN_LIMIT: REPLAY_SCAN_LIMIT,
   RATE_WINDOW_SEC: RATE_WINDOW_SEC,

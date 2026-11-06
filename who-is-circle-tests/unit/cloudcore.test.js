@@ -169,11 +169,14 @@ function makeEvent(pts, extra) {
 
   {
     const db = makeDb();
-    const hi = circlePoints({ r: 180, noise: 0.35 });
+    // 笔迹噪声不能太小：judge() 里 `score >= 99 && risk > 0` 会判 shadow
+    //（"太完美 = 像机器人"）。这里要的是两局**都判 ok**、且一局明显更高的正常笔迹。
+    const hi = circlePoints({ r: 180, noise: 2.2 });
     const lo = circlePoints({ r: 120, noise: 4.5 });
     const a = makeEvent(hi), b = makeEvent(lo);
     const r1 = await core.handle(a.ev, { OPENID: 'o_8' }, db);
     const r2 = await core.handle(b.ev, { OPENID: 'o_8' }, db);
+    ok(r1.verdict === 'ok', '第一局判 ok（控制组：前提成立）', r1.verdict);
     ok(r1.newBest === true, '首次提交 → newBest=true', '分=' + r1.score);
     ok(r2.newBest === false, '更低分再交 → newBest=false', '分=' + r2.score);
     ok(r2.best >= r1.score, 'best 不因低分而下降', 'best=' + r2.best);
@@ -222,6 +225,96 @@ function makeEvent(pts, extra) {
     db.subs.push({ openid: 'someone', sig: ev.sig, sigHash: 'x', score: 1, verdict: 'ok', ts: Math.floor(Date.now() / 1000) });
     const out = await core.handle(ev, { OPENID: 'o_dry' }, db, { dryRun: true });
     ok(out.replay === false, '干跑不做重放检测（结果确定）');
+  }
+
+  console.log('\n========== 十、scores 的语义：无效成绩不计入最佳，限流字段照常更新 ==========');
+  // scores 集合 = 服务端权威「有效」最高分 + 防作弊状态。
+  // 被判无效（shadow / reject）的成绩不能抬高 scores.score —— 否则一次作弊就把
+  // 这个玩家的最高分永久顶住，而且客户端本地最佳分与云端 best 会永久对不上。
+  // 但 recentSubmits（速率限制的基准）**必须照常更新**，不写就等于限流失效。
+
+  {
+    const db = makeDb();
+    // 注意：笔迹噪声别给太小 —— judge() 里 `score >= 99 && risk > 0` 会判 shadow
+    //（"太完美 = 像机器人"）。这里要的是一局能判 ok 的正常笔迹。
+    const pts = circlePoints();
+    const { ev } = makeEvent(pts);
+    const first = await core.handle(ev, { OPENID: 'o_10' }, db);
+    ok(first.verdict === 'ok', '第一笔 → ok', first.verdict);
+    const row1 = db.scoreRows.get('o_10');
+    const best1 = row1.score;
+    ok(best1 > 0, 'scores 记下了有效最高分', 'score=' + best1);
+
+    // 同一份笔迹再交 → 重放 → shadow
+    const again = await core.handle(ev, { OPENID: 'o_10' }, db);
+    ok(again.verdict === 'shadow', '同一份笔迹再交 → shadow', again.verdict);
+    ok(again.newBest === false, '被判无效 → 不算新纪录');
+    ok(again.best === best1, '出参 best 也不被无效成绩抬高', 'best=' + again.best);
+
+    const row2 = db.scoreRows.get('o_10');
+    ok(row2.score === best1, '**scores.score 不被无效成绩抬高**', best1 + ' → ' + row2.score);
+    ok(row2.level === row1.level, 'level 也不变（段位跟着最高分走）');
+    ok(row2.updatedAt === row1.updatedAt, 'updatedAt（分数最后更新时间）不变');
+    ok(row2.recentSubmits.length === 2, '**但 recentSubmits 照常更新**（速率限制的基准，不能不写）',
+      'len=' + row2.recentSubmits.length);
+    ok(typeof row2.lastSubmitAt === 'number', 'lastSubmitAt 照常更新');
+    ok(db.subs.length === 2, 'submissions 两条都在（审计完整）', 'len=' + db.subs.length);
+    ok(db.subs[1].verdict === 'shadow', '第二条审计记录 verdict=shadow');
+  }
+
+  {
+    // 玩家的**第一笔**就是被判无效：行要建（限流字段得落），但分数必须是 0
+    const db = makeDb();
+    const pts = circlePoints();
+    const { ev } = makeEvent(pts);
+    const sigHash = S.fnv(JSON.stringify(ev.sig));
+    db.subs.push({ openid: 'someone', sig: ev.sig, sigHash: sigHash, score: 1, verdict: 'ok', ts: Math.floor(Date.now() / 1000) });
+    const out = await core.handle(ev, { OPENID: 'o_13' }, db);
+    ok(out.verdict === 'shadow', '预置同一份笔迹 → 第一笔就判 shadow', out.verdict);
+    const row = db.scoreRows.get('o_13');
+    ok(!!row, '被判无效也要建 scores 行（限流字段要落）');
+    ok(row.score === 0, '但分数是 0（无效成绩不进榜）', 'score=' + row.score);
+    ok(row.recentSubmits.length === 1, '限流字段照常落库', 'len=' + row.recentSubmits.length);
+  }
+
+  {
+    // unverified / ok：分数都要计入最佳（unverified 只是"标出来"，不是"不给分"）
+    // 这两档在真实笔迹里很难稳定复现，所以直接测落库口径的纯函数
+    const mine = { score: 90, level: 3, updatedAt: 111, recentSubmits: [] };
+    const okRow = core.buildScoreRow(mine, 'ok', 95.5, 222, []);
+    const unvRow = core.buildScoreRow(mine, 'unverified', 95.5, 222, []);
+    ok(okRow.row.score === 95.5, 'ok → 分数计入最佳', 'score=' + okRow.row.score);
+    ok(unvRow.row.score === 95.5, 'unverified → **分数也给**（只是标出来）', 'score=' + unvRow.row.score);
+    ok(unvRow.row.level === okRow.row.level, 'unverified 的段位与最高分同口径');
+    ok(unvRow.row.updatedAt === 222, 'unverified → updatedAt 更新（分数确实变了）');
+    ok(unvRow.newBest === true, 'unverified → 算新纪录');
+
+    const shadowRow = core.buildScoreRow(mine, 'shadow', 95.5, 222, []);
+    ok(shadowRow.row.score === 90, 'shadow → **分数不计入最佳**', 'score=' + shadowRow.row.score);
+    ok(shadowRow.row.level === 3, 'shadow → 段位不变');
+    ok(shadowRow.row.updatedAt === 111, 'shadow → updatedAt 不动');
+    ok(shadowRow.row.recentSubmits.length === 1, 'shadow → 限流字段照常更新', 'len=' + shadowRow.row.recentSubmits.length);
+    ok(shadowRow.newBest === false, 'shadow → 不算新纪录');
+
+    const rejectRow = core.buildScoreRow(mine, 'reject', 95.5, 222, []);
+    ok(rejectRow.row.score === 90, 'reject → 分数不计入最佳', 'score=' + rejectRow.row.score);
+
+    // 没有历史记录时的默认值
+    const fresh = core.buildScoreRow(null, 'shadow', 95.5, 222, []);
+    ok(fresh.row.score === 0, '没有历史 + 无效成绩 → 分数 0', 'score=' + fresh.row.score);
+    ok(fresh.row.recentSubmits.length === 1, '没有历史也要落限流字段');
+  }
+
+  {
+    // 「太完美 = 像机器人」：judge() 里 score >= 99 && risk > 0 → shadow
+    // 这个行为直接决定玩家体验（画得越圆越可能不上榜），必须锁住
+    const db = makeDb();
+    const pts = circlePoints({ noise: 0.35 });   // ≈100 分
+    const { ev } = makeEvent(pts);
+    const out = await core.handle(ev, { OPENID: 'o_15' }, db);
+    ok(out.verdict === 'shadow', '接近完美的圆（≈100 分）被判 shadow', out.verdict);
+    ok(out.newBest === false, '→ 不算新纪录');
+    ok(db.scoreRows.get('o_15').score === 0, '→ 不进榜（scores 记 0）', 'score=' + db.scoreRows.get('o_15').score);
   }
 
   console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);

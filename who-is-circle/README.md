@@ -62,7 +62,7 @@
 | 开放数据域守卫 | `cd ../who-is-circle-tests && npm run test:opendata` | 无（纯 Node） | `game.json` 的 `openDataContext` 指向的目录真实存在、开放数据域沙盒隔离（不越界调好友 API / 不引远程 URL）、打包产物边界 |
 | 云函数契约 | `cd ../who-is-circle-tests && npm run test:cloudfn` | 无（纯 Node） | 云函数里的 `scoring.js` 与 `shared/scoring.js` **sha256 相同**（算法不许漂移）、云函数不内联评分引擎、不引用小游戏主域符号、`cloudfunctions/` 被排除出小程序包 |
 | 云函数行为 | `cd ../who-is-circle-tests && node unit/cloudcore.test.js` | 无（纯 Node，内存 db） | 云端分 = 客户端分（误差 ≤ 0.1）、云端**重算**而非采信上报分（谎报 999.9 无效）、重放检测、速率限制、最高分只升不降、客户端 `guard` 不参与判定、`clock_drift` 的取舍在出参里看得见、干跑不落库 |
-| 主域上报 | `cd ../who-is-circle-tests && npm run test:cloudclient` | 无（纯 Node，注入假实现） | 触发策略（没破纪录**一次云函数都不调**）、分级（≥95 同步等结论 / <95 异步不阻塞）、`shadow`/`reject` 不上榜、云端不可达不抛异常、托管数据格式（`wxgame.score` 整数 ×10、`level` 同级）、pending 队列入队/补传/删除/上限丢最旧 |
+| 主域上报 | `cd ../who-is-circle-tests && npm run test:cloudclient` | 无（纯 Node，注入假实现） | 触发策略（没破纪录**一次云函数都不调**）、分级（≥95 同步等结论 / <95 异步不阻塞）、`shadow`/`reject` 不上榜、云端不可达不抛异常、托管数据格式（`wxgame.score` 整数 ×10、写**云端权威最高分**、`level` 同级、`v` 带 verdict）、pending 队列入队/补传/删除/上限丢最旧 |
 | 结算 × 云端 | `cd ../who-is-circle-tests && npm run test:gamesettle` | 无（纯 Node） | 云端结论接到**显示分数 / 新纪录徽章 / 本地最佳分**三件事上：确认 → 分数换云端分且最佳分跟着换；判无效 → 撤徽章且最佳分不动；不可达 → 照常单机行为；旧结论不串台改新一局 |
 | 同步评分引擎 | `cd ../who-is-circle-tests && npm run sync:cloud` | 无 | 把 `shared/scoring.js` 机械拷贝进云函数（拷贝完由上面的 sha256 守卫验收） |
 | 端到端云端对拍 | `cd ../who-is-circle-tests && npm run verify:cloud` | CloudBase CLI（`tcb`）+ 已部署的 `score` | 4 档笔迹经**真实云函数**算出的分与客户端分之差 ≤ 0.1（走干跑通道，不落库、不污染榜单） |
@@ -197,6 +197,16 @@ cloudfunctions/score/
 
 **云调用没有微信上下文**，所以另有一条**干跑（`__selftest`）通道**：
 只算分不落库、身份固定为 `__selftest__`，用来验证「云端算的分 == 客户端算的分」而不污染榜单。
+
+**⚠️ 改完云函数要重新部署，否则客户端拿不到 `best`**：
+托管数据写的是云端出参的 `best`（权威有效最高分）。云函数没更新时出参里没有 `best`，
+客户端会回退写本局分并在日志里留一行 `[cloud] 云端未返回 best（云函数没更新？）→ 托管数据暂写本局分`。
+
+```bash
+CLI=/Applications/wechatwebdevtools.app/Contents/MacOS/cli
+cd who-is-circle
+$CLI cloud functions deploy --env cloud1-d6grvs82r581230b2 --names score --project "$PWD"
+```
 细节见 `cloudfunctions/score/README.md`。
 
 > 当前进度：**P2**。客户端的上报链路是 P3，榜面是 P4/P5。
@@ -220,13 +230,19 @@ cloudfunctions/score/
 
 ```js
 { KVDataList: [{ key: 'circle', value: JSON.stringify({
-    wxgame: { score: Math.round(真实分 × 10), update_time: Unix 秒 },  // Int32 要求
-    level: 段位索引
+    wxgame: { score: Math.round(云端权威最高分 × 10), update_time: Unix 秒 },  // Int32 要求
+    level: 段位索引,
+    v: 'ok'            // verdict 标记：'ok' | 'unverified'
 }) }] }
 ```
 
 - `wxgame.score` 是 **Int32** → 分数一位小数，所以上报 **×10**、显示 ÷10。
-- `level` 放在 `wxgame` **同级**（`wxgame` 下不允许自定义字段）。
+- `score` 写的是**云端权威最高分**（云函数出参的 `best`），不是本局分 ——
+  `wxgame.score` 是小游戏中心/排行榜的标准字段，语义就是"最好成绩"；
+  写本局分会让 `score`（按本局）与 `level`（按最高分）口径打架，榜面会出现"80 分 · 大师段位"。
+- `level` 放在 `wxgame` **同级**（`wxgame` 下不允许自定义字段），按最高分算。
+- `v` 带 verdict：设计文档要求 `unverified` 的分要给但标出"未完全验证"。
+  开放数据域读不到 `submissions`（不能发网络请求），所以那个角标只能靠托管数据自己带。
 - `key` 是 `circle`：≤8 字符且全英文，后台排行榜配置要对得上。
 
 **降级路径**（每一条都不弹错误、不打断玩法）：
@@ -319,14 +335,19 @@ IDE 弹窗后手机扫码，主域与开放数据域的 console 都能看到。
 | 云函数日志 | 一条 `score` 调用 + 返回的 verdict | 开发者工具 →「云开发」→ 云函数 `score` → 日志 |
 | 数据库 `scores` | 一条 `_id` = **真实 OPENID**（不是 `__selftest__`）的记录 | 云开发控制台 → 数据库 → `scores` |
 | 数据库 `submissions` | 对应提交，含 `verdict` 字段 | 同上 → `submissions` |
-| 托管数据 | key=`circle`，`wxgame.score` = 真实分 ×10 | 云开发控制台 → 存储 → 用户数据 |
+| 托管数据 | key=`circle`，`wxgame.score` = **云端权威最高分** ×10 | 云开发控制台 → 存储 → 用户数据 |
 
-**两个容易误判的点**：
+**四个容易误判的点**：
 
 1. **徽章弹不弹不能作为链路通不通的依据。** 开发版里云端结论只作提示（DEV 豁免），徽章照弹 ——
    "徽章弹了"不证明云调用成功（可能是 unavailable 降级）。真正的判据是**数据库里有没有那条真实 OPENID 的记录**。
-2. **`scores` 里有记录 ≠ 这局有效。** 云端 `core.js` 现在无论 verdict 是什么都会把分写进 `scores`
-   （只有 dryRun 和限流拒绝不写），与设计文档「shadow 成绩不计入最佳」不一致 —— 判有效性要看 `submissions` 的 `verdict`。
+2. **`scores` 里有记录 ≠ 这一局有效。** 云端 `scores.score` 是**有效**最高分
+   （`shadow`/`reject` 不计入，见 P3.5 的口径），但 `submissions` 里那次提交仍留有 `verdict=shadow`
+   的审计记录 —— **判某一局的有效性要看 `submissions` 的 `verdict`**，`scores` 只反映最高分。
+3. **画得太圆反而不上榜。** 云端 `judge()` 里 `score >= 99 && risk > 0` ⇒ `shadow`
+   （"太完美 = 像机器人"）。手抖一点反而更容易判 `ok` —— 这不是 bug，是防作弊规则。
+4. **速率限制 60 秒 5 次。** 连着玩超过 5 局，第 6 局起会被判 `reject` + `reason=rate_limit`：
+   `submissions` 里有记录，但 `scores` 不更新（限流分支直接返回）。隔 60 秒再玩一局即可验证。
 
 ## 可测试化
 

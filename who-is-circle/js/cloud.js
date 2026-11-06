@@ -42,10 +42,18 @@
   /**
    * 造托管数据的 value。
    * 微信标准格式（这样以后想上搜索 / 小游戏中心曝光不用改结构）：
-   *   { wxgame: { score: 真实分×10, update_time: Unix 秒 }, level: 段位索引 }
+   *   { wxgame: { score: 真实分×10, update_time: Unix 秒 }, level: 段位索引, v: verdict }
    * `level` 放在 wxgame 同级 —— wxgame 下不允许自定义字段。
+   *
+   * `score` 写的是**云端权威最高分**（res.best），不是本局分：
+   *   - wxgame.score 是小游戏中心/排行榜的标准字段，语义就是"最好成绩"
+   *   - 写本局分会让 score（按本局）与 level（按最高分）两个字段口径打架，
+   *     榜面会出现"80 分 · 大师段位"这种自相矛盾
+   *
+   * `v` 是 verdict 标记：设计文档要求 unverified 的分要给但标出"未完全验证"，
+   * 不带这个字段好友榜上就没地方显示那个角标。
    */
-  function buildHostingValue(score, level, nowSec) {
+  function buildHostingValue(score, level, nowSec, verdict) {
     var s = (typeof score === 'number' && isFinite(score)) ? score : 0;
     var lv = (typeof level === 'number' && isFinite(level)) ? level : 0;
     return JSON.stringify({
@@ -53,7 +61,8 @@
         score: Math.round(s * 10),        // Int32：真实分 ×10
         update_time: Math.floor(nowSec)   // Unix 秒
       },
-      level: lv
+      level: lv,
+      v: (verdict === 'unverified') ? 'unverified' : 'ok'
     });
   }
 
@@ -115,6 +124,7 @@
     var maxPending = (typeof deps.maxPending === 'number') ? deps.maxPending : DEFAULT_MAX_PENDING;
     var timeoutMs = (typeof deps.timeoutMs === 'number') ? deps.timeoutMs : DEFAULT_TIMEOUT_MS;
     var enabled = deps.enabled !== false && typeof callFunction === 'function';
+    var warnedNoBest = false;   // 云端没返回 best 时提醒一次就够（提醒太多会吵）
 
     // ---------- pending 队列 ----------
 
@@ -144,12 +154,13 @@
     // ---------- 托管数据 ----------
 
     // 写托管数据。失败不抛 —— 云端已经确认过分了，托管数据写失败只是「暂时没上榜」。
-    function reportHosting(score, level) {
+    function reportHosting(score, level, verdict) {
       if (!setUserCloudStorage) return Promise.resolve(false);
-      var value = buildHostingValue(score, level, now() / 1000);
+      var value = buildHostingValue(score, level, now() / 1000, verdict);
       var payload = { KVDataList: [{ key: key, value: value }] };
       return Promise.resolve(setUserCloudStorage(payload)).then(function () {
-        log('[cloud] 托管数据写入成功 key=' + key + ' score=' + score);
+        log('[cloud] 托管数据写入成功 key=' + key + ' score=' + score +
+            (verdict === 'unverified' ? '（未完全验证）' : ''));
         return true;
       }, function (e) {
         log('[cloud] 托管数据写入失败 key=' + key + ' err=' + msg(e));
@@ -198,14 +209,22 @@
       if (v !== 'ok' && v !== 'unverified') {
         return { status: 'unavailable', score: payload.score, reason: '未知 verdict：' + String(v) };
       }
-      var cs = (typeof res.score === 'number') ? res.score : payload.score;
-      return reportHosting(cs, res.level).then(function (hosted) {
+      var cs = (typeof res.score === 'number') ? res.score : payload.score;   // 本局分（结算页显示用）
+      // 云端权威最高分 —— 好友榜读的是托管数据，所以榜上显示的是它，不是本局分
+      var bs = (typeof res.best === 'number') ? res.best : cs;
+      if (typeof res.best !== 'number' && !warnedNoBest) {
+        warnedNoBest = true;
+        log('[cloud] 云端未返回 best（云函数没更新？）→ 托管数据暂写本局分');
+      }
+      var lv = (typeof res.level === 'number') ? res.level : 0;
+      return reportHosting(bs, lv, v).then(function (hosted) {
         return {
           status: 'ok',
           score: cs,
           cloudScore: cs,
-          level: (typeof res.level === 'number') ? res.level : 0,
-          best: (typeof res.best === 'number') ? res.best : cs,
+          hostedScore: bs,      // 写进托管数据的分（= 云端权威最高分）
+          level: lv,
+          best: bs,
           verdict: v,
           hosted: hosted
         };

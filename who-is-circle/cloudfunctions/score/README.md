@@ -40,10 +40,10 @@
 {
   "ok": true,
   "verdict": "ok",          // ok | shadow | unverified | reject
-  "score": 97.8,            // 云端算出的权威分
-  "level": 4,               // 段位索引
+  "score": 97.8,            // 本次云端算出的权威分（这一局）
+  "level": 4,               // 段位索引 —— 按 best 算，不是按本次分
   "newBest": true,
-  "best": 97.8,
+  "best": 97.8,             // 服务端权威「有效」最高分 —— 托管数据写的是它
   "reason": "",             // reject 时的说明
   "cloudGuard": {           // 云端自己的防作弊判定
     "risk": 0, "hits": [], "hard": [],
@@ -60,6 +60,24 @@
 `ok` / `shadow` / `unverified` / `reject`。
 `unverified` 是 `risk` 够高但没到 `shadow` 门槛时的中间态 —— 分数给，但标记为"未完全验证"。
 
+### `best` 是「有效」最高分 —— 无效成绩不计入
+
+`best` = `scores` 集合里存的那个最高分，**只统计有效成绩**（`ok` / `unverified`）。
+被判 `shadow` / `reject` 的这一局**不计入 best**（设计文档 §7.4），
+否则一次作弊就能把这个玩家的最高分永久顶住，而且客户端本地最佳分与云端 best 会永久对不上。
+
+所以 `verdict` 是 `shadow` / `reject` 时：`best` 保持原值不变、`newBest` 为 `false`、
+`score` 仍然是**这一局**的分（结算页照常显示，只是不上榜）。
+
+⚠️ 但防作弊字段（`recentSubmits` / `lastSubmitAt`）**照常更新** ——
+`recentSubmits` 是速率限制的基准，不写就等于限流失效。
+
+### `scores` 与托管数据的关系
+
+`scores` 集合是**服务端**的权威账本（目前只有云函数自己读）；**好友榜读的是托管数据**
+（`wx.getFriendCloudStorage`），托管数据由客户端在拿到 `ok` / `unverified` 结论后写入，
+写进去的是本出参里的 `best`。所以榜上显示的分数 = 服务端权威有效最高分。
+
 ## 判定逻辑：云端自己算，不采信上报
 
 1. `decodePts` 解笔迹 → 点数 > 900 直接拒
@@ -68,7 +86,8 @@
 4. `judge` 出 verdict（服务端**不传 `dev`**，没有开发豁免）
 5. 重放检测（见下）
 6. 速率限制：同一 openid 60 秒内最多 5 次
-7. 落库：`submissions` 每次都写（含被拒的），`scores` 只在更高分时更新分数字段
+7. 落库：`submissions` 每次都写（含被拒的）；`scores` 的分数字段只在成绩**有效**且更高时更新，
+   速率字段每次都更新（口径见 `buildScoreRow`）
 
 客户端上报的 `guard` **不参与判定**，只回显出来供审计对比。
 理由：客户端代码在攻击者手里，任何"客户端说自己有问题"的判断都能被摘掉。

@@ -216,7 +216,7 @@ who-is-circle-tests/
 
 | 集合 | 文档结构 | 写入时机 |
 |---|---|---|
-| `scores` | `{_id: openid, score: Int, level: Int, updatedAt}` | 仅当云端分更高时 upsert。**本期只写不查**（世界榜数据源） |
+| `scores` | `{_id: openid, score: Int, level: Int, updatedAt, lastSubmitAt, recentSubmits}` | **服务端权威「有效」最高分** + 防作弊状态。`score`/`level`/`updatedAt` 只在成绩**有效**（`ok`/`unverified`）且更高时更新；`lastSubmitAt`/`recentSubmits` **每次调用都更新**（速率限制的基准）。**本期只写不查**（世界榜数据源） |
 | `submissions` | `{_id: auto, openid, sig, score, verdict, ts}` | 每次调用都写（含被拒的），用于重放检测与审计 |
 
 `submissions` 增长控制：保留最近 7 天，用云函数定时触发器清理（本期可先不做，靠量级撑）。
@@ -231,13 +231,20 @@ who-is-circle-tests/
     "score": 924,
     "update_time": 1780000000
   },
-  "level": 4
+  "level": 4,
+  "v": "ok"
 }
 ```
 
 - key：`circle`（≤8 字符全英文）
-- `wxgame.score` = 真实分 × 10（Int32 要求）
-- `level` 放在 `wxgame` 同级（`wxgame` 下不可自定义字段，同级可以）
+- `wxgame.score` = **云端权威最高分** × 10（Int32 要求）
+  写最高分而不是本局分：`wxgame.score` 是小游戏中心/排行榜的标准字段，语义就是"最好成绩"；
+  写本局分会让 `score`（按本局）与 `level`（按最高分）两个字段口径打架，
+  榜面会出现"80 分 · 大师段位"这种自相矛盾
+- `level` 放在 `wxgame` 同级（`wxgame` 下不可自定义字段，同级可以）= 最高分对应的段位
+- `v` = verdict 标记（`ok` / `unverified`）
+  §7.4 要求 unverified 的分要给但标出"未完全验证"；开放数据域读不到 `submissions`
+  （不能发网络请求），所以那个角标只能靠托管数据自己带 verdict 字段
 - `update_time`：Unix 秒
 
 ### 6.4 开放数据域消息协议
@@ -333,32 +340,37 @@ who-is-circle-tests/
 
 **pending 队列约束**：本地存储单 key 1 MB、总 10 MB。队列上限设 5 条，超出丢弃最旧。
 
-**⚠️ P3 实施时发现的、文档与实现不一致的一处（必须在 P4 之前定掉）**
+**✅ P3.5 已定：`scores` 的口径（2026-11-06，P4 之前定掉）**
 
-本文档 §7.4 说「云函数判定无效 ⇒ 不上榜」，但 P2 的云端实现（`cloudfunctions/score/core.js`）是
-**无论 verdict 是什么都会把分写进 `scores`**（只有 dryRun 与速率限制拒绝不写）：
+这一处（本文档 §7.4 说「云函数判定无效 ⇒ 不上榜」，而 P2 的实现无论 verdict 都把分写进 `scores`）
+已经定掉，取的是 **① 云端拦**，但实现上比原方案多一层：
 
-```js
-var verdict = S.judge(r, g, replay, false);   // ok / shadow / unverified / reject
-...
-if (!dryRun) {
-  await db.addSubmission(...);                // submissions 每次都写（含被拒的）
-  await db.setScore(OPENID, { score: nextBest, ... });   // ← verdict 没有参与判断
-}
-```
+**关键前提：好友榜读的是托管数据，不是 `scores` 集合。** 榜 = `wx.getFriendCloudStorage` 拿到的好友托管数据；
+`scores` 集合目前**只有云函数自己读**（`getScore` → 拿 `recentSubmits` 做速率限制、拿 `score` 算 best）。
 
-后果：被判 `shadow` 的成绩照样会出现在好友榜上（只要比当前最高分高），而 §7.4 与 §5.1 的
-「shadow 成绩不计入最佳」对不上。
+所以「shadow 会不会出现在榜上」的答案在**客户端**，而客户端（P3）早就拦住了 ——
+`applyVerdict` 只在 `ok` / `unverified` 时写托管数据，`shadow` / `reject` 直接返回不写：
 
-P4 读榜之前必须二选一：
+- 好友榜上**从来不会出现**被判无效的成绩 → 选项②防的是一个不存在的问题；
+- 选项②要的「未验证角标」需要 verdict，而开放数据域读不到 `submissions`（不能发网络请求），
+  所以角标只能靠**托管数据自己带 verdict 字段** → 选项②一点改动都省不掉。
 
-- **① 云端拦**：verdict ∈ {shadow, reject} 时不写 `scores`（只有 `scores` 与 `submissions` 分开写，
-  `submissions` 仍留审计记录）—— 语义最干净，但要改 P2 的云函数并重新部署；
-- **② 榜只作参考**：榜上照实显示云端算的分，另用 `submissions` 的 verdict 做「未验证」角标 ——
-  不用改云函数，但好友榜上会出现被判无效的成绩。
+于是定了三件事：
 
-客户端侧（P3）已经按 §7.4 实现了：云端判无效 ⇒ 不弹新纪录徽章、`H` 不变、不写托管数据。
-不一致的只有**云端 `scores` 集合**这一处。
+1. **云端 `scores` 改成「部分写」**：被判无效（`shadow`/`reject`）时 `score`/`level`/`updatedAt`
+   沿用原值，但 `lastSubmitAt`/`recentSubmits` 照常更新。
+   ⚠️ **不能干脆不写** —— `recentSubmits` 是速率限制的基准，不写等于限流失效（可以无限提交刷榜）。
+   ⚠️ `set` 是**覆盖**语义，不传的字段会被清空，所以原值必须带回来。
+   `unverified` 计入最佳（分数给、只是标出来），只有 `shadow`/`reject` 不计。
+2. **托管数据改写云端权威最高分**（`res.best` 而不是 `res.score`），口径与 `level` 对齐。
+3. **托管数据新增 `v` 字段**带 verdict（见 §6.3）。
+
+落库口径抽成了纯函数 `buildScoreRow()` —— `shadow` / `unverified` 这两档在真实笔迹里很难稳定复现，
+端到端跑测不出来，所以直接对纯函数断言。
+
+**顺带发现并锁进测试的一个行为**：`judge()` 里 `score >= 99 && risk > 0` ⇒ `shadow`，
+也就是**接近完美的圆（≈100 分）一律判 shadow、不进榜**（"太完美 = 像机器人"）。
+这直接决定玩家体验（画得越圆越可能不上榜），写进测试防回归。
 
 
 ---
@@ -458,6 +470,7 @@ wx.getSetting({
 | P1 | 加 `game.json` 的 `openDataContext` + 空的 `open-data/index.js`；主域能拿到 `sharedCanvas` 并贴一张占位图 | 预览里能看到占位图；打包产物不含 cloudfunctions |
 | P2 | 云函数 `score` + `shared/scoring.js` 同步脚本 + 云数据库集合与索引 | 本地调云函数能返回权威分；与客户端分一致（误差 ≤ 0.1） |
 | P3 | 主域上报链路（触发策略 + 分级同步/异步 + pending 队列 + 落 `setUserCloudStorage`） | 破纪录后云端 `scores` 有记录；被判无效时不更新本地 `H`<br>**✅ 已完成**（计划：`../plans/2026-11-05-friend-leaderboard-p3-client-upload.md`）：新增 `js/cloud.js`；云端判无效时严格照本文档执行（不弹徽章、`H` 不变、不上榜）；**云端不可达时本文档 §7.4 写的是「`H` 不更新」，实作改为保持单机行为**（服务不可达 ≠ 作弊证据，且开发者工具预览里云函数常未部署，照抄会让玩家永远看不到新纪录徽章）；**开发版云端结论只作提示**（服务端无开发豁免，否则开发者自己的合成笔迹会被判 `shadow`）。两处取舍已写进 `who-is-circle/README.md`。 |
+| P3.5 | 定掉 `scores` 口径 + 托管数据改写权威最高分并带 verdict | 云端 `shadow` 不再抬高 `scores.score`（限流字段照常更新）；托管数据写 `best` 且带 `v`<br>**✅ 已完成**（2026-11-06）：取「① 云端拦」但实现为**部分写**（分数字段只在成绩有效时更新，`recentSubmits`/`lastSubmitAt` 照常更新 —— 不写就限流失效；`set` 是覆盖语义，原值必须带回来）；落库口径抽成纯函数 `buildScoreRow()` 以便直接断言 `shadow`/`unverified` 两档；托管数据从「本局分」改为「云端权威最高分」并新增 `v` 字段（好友榜的「未完全验证」角标只能靠它，开放数据域读不到 `submissions`）。**顺带锁进测试**：`judge()` 里 `score >= 99 && risk > 0` ⇒ `shadow`，即接近完美的圆一律不上榜。 |
 | P4 | 开放数据域渲染（拉取 + 排序 + 画榜 + 样式参数 + 头像兜底） | 预览里能看到好友榜，含自己并高亮 |
 | P5 | 榜面 UI（首页入口 + overlay + 隐私门禁引导） | 真机能看到完整榜面；未授权时有引导 |
 | P6 | 打包体积检查 + 云环境转付费 + 文档（README 后台配置说明） | 打包产物不含云函数源码；正式版前环境已转付费 |
