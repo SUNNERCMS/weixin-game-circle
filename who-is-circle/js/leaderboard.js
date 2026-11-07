@@ -29,7 +29,7 @@
   // 内容矩形（设计px）与缺省像素比
   var DEFAULT_WIDTH = 700;
   var DEFAULT_HEIGHT = 1180;
-  var DEFAULT_DPR = 2;
+  var DEFAULT_SCALE = 1;   // 兜底：没有主域上下文时按 1:1 画
 
   // 样式参数 —— 设计文档 §6.4 钉死的值。
   // 为什么放在主域：开放域是独立沙盒，改样式要改一处（D9）。
@@ -91,7 +91,10 @@
       selfLevel: (typeof o.selfLevel === 'number' && isFinite(o.selfLevel)) ? o.selfLevel : null,
       width: (typeof o.width === 'number' && o.width > 0) ? o.width : DEFAULT_WIDTH,
       height: (typeof o.height === 'number' && o.height > 0) ? o.height : DEFAULT_HEIGHT,
-      pixelRatio: (typeof o.pixelRatio === 'number' && o.pixelRatio > 0) ? o.pixelRatio : DEFAULT_DPR,
+      // scale = 主域的「物理像素 / 设计像素」比例（view.scale）
+      // ⚠️ 不是设备像素比 —— 共享画布是物理像素的，密度必须跟主域的缩放一致，
+      // 否则内容会被放大/裁切（真机上踩过：文字放大三倍、卡片右边被切掉）
+      scale: (typeof o.scale === 'number' && o.scale > 0) ? o.scale : DEFAULT_SCALE,
       rankNames: names.slice(),
       style: style
     };
@@ -134,6 +137,6 @@
     DEFAULT_KEY: DEFAULT_KEY,
     DEFAULT_WIDTH: DEFAULT_WIDTH,
     DEFAULT_HEIGHT: DEFAULT_HEIGHT,
-    DEFAULT_DPR: DEFAULT_DPR
+    DEFAULT_SCALE: DEFAULT_SCALE
   };
 });

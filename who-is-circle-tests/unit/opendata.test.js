@@ -251,7 +251,7 @@ function makeFakeWx(opts) {
   {
     const before = fake.calls.friend;
     fake.calls.onMessage({
-      type: 'showLeaderboard', key: 'circle', width: 700, height: 1180, pixelRatio: 2,
+      type: 'showLeaderboard', key: 'circle', width: 700, height: 1180, scale: 2,
       rankNames: ['灾难现场', '一团面条', '土豆', '饺子', '鸡蛋', '甜甜圈', '饼干', '轮胎', '满月', '圆规', '教科书', '精密仪器', '神之圆'],
       style: {}, selfScore: 80
     });

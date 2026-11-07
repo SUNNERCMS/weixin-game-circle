@@ -51,6 +51,11 @@
     return (typeof wx !== 'undefined' && wx) ? wx : null;
   }
 
+  // 开放数据域的诊断日志（真机调试时看得到）
+  function odLog(m) {
+    try { if (typeof console !== 'undefined' && console.log) console.log('[open-data] ' + m); } catch (e) { /* ignore */ }
+  }
+
   function getDpr(w) {
     try {
       if (w && typeof w.getSystemInfoSync === 'function') {
@@ -202,7 +207,7 @@
     var height = (typeof msg.height === 'number' && msg.height > 0) ? msg.height : 0;
     if (!width || !height) return;       // 还没收到消息 → 画布先空着
 
-    var dpr = (typeof msg.pixelRatio === 'number' && msg.pixelRatio > 0) ? msg.pixelRatio : getDpr(w);
+    var dpr = (typeof msg.scale === 'number' && msg.scale > 0) ? msg.scale : getDpr(w);
     // 画布尺寸必须在画之前定好 —— 改 canvas.width/height 会把画布清空。
     // 而卡高要跟着行数走（1 个人的榜不该是张空卡），所以先问 board 要高度。
     var boardH = height;
@@ -213,10 +218,24 @@
         });
       }
     } catch (e) { /* 算不出来就用传进来的高度 */ }
+
+    // 平台可能对共享画布的尺寸做上限（真机上见过被裁的：内容被放大三倍、卡片右边被切掉）。
+    // 所以设完尺寸**读回实际值**，不一致就按比例把内容缩回去 ——
+    // 宁可内容小一点（略糊），也不能让内容被裁掉或错位。
+    var wantW = Math.round(width * dpr);
+    var wantH = Math.round(boardH * dpr);
+    var k = 1;
     try {
-      canvas.width = Math.round(width * dpr);
-      canvas.height = Math.round(boardH * dpr);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      canvas.width = wantW;
+      canvas.height = wantH;
+      var realW = canvas.width, realH = canvas.height;
+      if (realW > 0 && wantW > 0 && realW !== wantW) k = realW / wantW;
+      if (realH > 0 && wantH > 0 && Math.abs(realH - wantH) > 1) k = Math.min(k, realH / wantH);
+      ctx.setTransform(dpr * k, 0, 0, dpr * k, 0, 0);
+      if (realW !== wantW || realH !== wantH) {
+        odLog('画布被平台裁剪：期望 ' + wantW + '×' + wantH + ' 实际 ' + realW + '×' + realH +
+              ' → 内容按 ' + k.toFixed(3) + ' 缩放补偿');
+      }
     } catch (e) { /* 画布不可写就到此为止 */ }
 
     // board.js 没加载上（require 失败）→ 画一句人话，别留一片空白

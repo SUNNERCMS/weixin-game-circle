@@ -943,7 +943,13 @@
       selfLevel: level,
       width: CFG.RANK_PANEL.content.w,
       height: CFG.RANK_PANEL.content.h,
-      pixelRatio: env.dpr,
+      // ⚠️ 这里传的是**主域的物理像素/设计像素**比例（view.scale ≈ 1.56），
+      // **不是设备像素比 env.dpr（≈3）**。
+      //
+      // 原因：开放域的共享画布是**物理像素**的，主域又把它画进设计坐标矩形里。
+      // 要让内容在屏幕上和主域一样大，共享画布的密度就得等于主域的 view.scale；
+      // 传 dpr 会让内容被放大/裁切（真机上出现过文字被放大三倍、卡片被切掉右边）。
+      scale: view.scale,
       rankNames: LeaderboardBridge.resolveRankNames(RANKS),
       style: LeaderboardBridge.buildStyleParams()
     });
@@ -1414,11 +1420,17 @@
     }
     if (odLogState !== 1) {
       odLogState = 1;
-      odLog('已连通 sharedCanvas ' + sc.width + '×' + sc.height);
     }
     var ar = sc.width / sc.height;
     var w = rect.w, h = rect.w / ar;
     if (h > rect.h) { h = rect.h; w = rect.h * ar; }
+    if (odLogState === 1) {
+      odLogState = 2;
+      // 共享画布是物理像素的；主域按设计坐标贴（ctx 上有 view.scale 的缩放）。
+      // 这两个数对不上 → 内容会被放大或裁切（真机上踩过），所以记一笔。
+      odLog('共享画布 ' + sc.width + '×' + sc.height + '（物理px）→ 贴成设计 ' +
+            Math.round(w) + '×' + Math.round(h) + '，view.scale=' + view.scale.toFixed(3));
+    }
     var x = rect.x + (rect.w - w) / 2;
     var y = rect.y + (rect.h - h) / 2;
     try {

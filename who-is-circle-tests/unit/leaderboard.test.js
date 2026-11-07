@@ -75,7 +75,7 @@ section('三、buildShowMessage —— 组装给开放域的消息');
   const names = LB.resolveRankNames(Scoring.RANKS);
   const msg = LB.buildShowMessage({
     key: 'circle', selfScore: 92.4, selfLevel: 4,
-    width: 700, height: 1180, pixelRatio: 2,
+    width: 700, height: 1180, scale: 2,
     rankNames: names, style: LB.buildStyleParams()
   });
   ok(msg && msg.type === 'showLeaderboard', "type = 'showLeaderboard'", msg && msg.type);
@@ -83,7 +83,7 @@ section('三、buildShowMessage —— 组装给开放域的消息');
   ok(msg.selfScore === 92.4, 'selfScore 带上了（兜底用）', String(msg.selfScore));
   ok(msg.selfLevel === 4, 'selfLevel 带上了', String(msg.selfLevel));
   ok(msg.width === 700 && msg.height === 1180, '内容矩形尺寸带上了', msg.width + '×' + msg.height);
-  ok(msg.pixelRatio === 2, 'pixelRatio 带上了', String(msg.pixelRatio));
+  ok(msg.scale === 2, 'scale 带上了（主域的物理像素/设计像素比例）', String(msg.scale));
   ok(Array.isArray(msg.rankNames) && msg.rankNames.length === names.length, '段位名表带上了');
   ok(msg.style && msg.style.rowH === 96, '样式参数带上了');
 }
@@ -95,7 +95,7 @@ section('三、buildShowMessage —— 组装给开放域的消息');
   ok(msg && msg.type === 'showLeaderboard', '仍是一合法的 showLeaderboard 消息');
   ok(msg && msg.key === 'circle', "key 缺省为 'circle'（托管数据的 key）", msg && msg.key);
   ok(msg && msg.width === 700 && msg.height === 1180, '尺寸缺省 700×1180');
-  ok(msg && msg.pixelRatio === 2, 'pixelRatio 缺省 2');
+  ok(msg && msg.scale === 1, 'scale 缺省 1（没有主域上下文就 1:1 画）', String(msg && msg.scale));
   ok(msg && Array.isArray(msg.rankNames) && msg.rankNames.length === 0, '缺 rankNames → 空数组（不抛）');
   ok(msg && msg.style && msg.style.rowH === 96, '缺 style → 用默认样式');
   ok(msg && msg.selfScore === null, '缺 selfScore → null（开放域据此判断「没有本地分」）');
