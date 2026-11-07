@@ -208,8 +208,36 @@
     if (!width || !height) return;       // 还没收到消息 → 画布先空着
 
     var dpr = (typeof msg.scale === 'number' && msg.scale > 0) ? msg.scale : getDpr(w);
-    // 画布尺寸必须在画之前定好 —— 改 canvas.width/height 会把画布清空。
-    // 而卡高要跟着行数走（1 个人的榜不该是张空卡），所以先问 board 要高度。
+
+    // ---- 共享画布的尺寸：固定成一个「最大画布」，不随后续帧改 ----
+    //
+    // 为什么固定：改 canvas.width/height 会清空画布，而且**平台不一定会照办** ——
+    // 真机上实测过：平台把尺寸裁到屏幕大小（赋值被忽略/被裁），
+    // 而且**只涨不缩**（先画的「加载中」那帧定了高度，后来的小画布不生效）→
+    // 卡片下面多出一条白带。
+    //
+    // 所以：画布固定 700×1180（设计px），卡片在里面**居中**画（高度自适应）。
+    // 这样每帧的画布尺寸都一样 → 不会被裁、不会残留、不会多出白带。
+    var wantW = Math.round(width * dpr);
+    var wantH = Math.round(height * dpr);
+    var realW = 0, realH = 0, k = 1;
+    try {
+      canvas.width = wantW;
+      canvas.height = wantH;
+      realW = canvas.width;
+      realH = canvas.height;
+      if (realW > 0 && wantW > 0 && realW !== wantW) k = realW / wantW;
+      if (realH > 0 && wantH > 0 && realH !== wantH) k = Math.min(k, realH / wantH);
+      ctx.setTransform(dpr * k, 0, 0, dpr * k, 0, 0);
+      // 显式清空：画布背景默认是白底，不清的话卡片四周会有一圈白
+      try { ctx.clearRect(0, 0, realW, realH); } catch (e2) { /* ignore */ }
+      if (realW !== wantW || realH !== wantH) {
+        odLog('画布尺寸与请求不符：请求 ' + wantW + '×' + wantH + ' 实际 ' + realW + '×' + realH +
+              ' → 内容按 ' + k.toFixed(3) + ' 缩放补偿');
+      }
+    } catch (e) { /* 画布不可写就到此为止 */ }
+
+    // 卡片高度自适应（1 个人的榜不该是张空卡），在固定画布里**垂直居中**
     var boardH = height;
     try {
       if (Board && typeof Board.boardHeight === 'function') {
@@ -217,26 +245,13 @@
           width: width, height: height, style: msg.style
         });
       }
-    } catch (e) { /* 算不出来就用传进来的高度 */ }
-
-    // 平台可能对共享画布的尺寸做上限（真机上见过被裁的：内容被放大三倍、卡片右边被切掉）。
-    // 所以设完尺寸**读回实际值**，不一致就按比例把内容缩回去 ——
-    // 宁可内容小一点（略糊），也不能让内容被裁掉或错位。
-    var wantW = Math.round(width * dpr);
-    var wantH = Math.round(boardH * dpr);
-    var k = 1;
+    } catch (e) { /* 算不出来就用传过来的高度 */ }
+    var offsetY = 0;
     try {
-      canvas.width = wantW;
-      canvas.height = wantH;
-      var realW = canvas.width, realH = canvas.height;
-      if (realW > 0 && wantW > 0 && realW !== wantW) k = realW / wantW;
-      if (realH > 0 && wantH > 0 && Math.abs(realH - wantH) > 1) k = Math.min(k, realH / wantH);
-      ctx.setTransform(dpr * k, 0, 0, dpr * k, 0, 0);
-      if (realW !== wantW || realH !== wantH) {
-        odLog('画布被平台裁剪：期望 ' + wantW + '×' + wantH + ' 实际 ' + realW + '×' + realH +
-              ' → 内容按 ' + k.toFixed(3) + ' 缩放补偿');
+      if (Board && typeof Board.boardHeight === 'function' && realH > 0) {
+        offsetY = Math.max(0, Math.round((realH / (dpr * k) - boardH) / 2));
       }
-    } catch (e) { /* 画布不可写就到此为止 */ }
+    } catch (e) { /* ignore */ }
 
     // board.js 没加载上（require 失败）→ 画一句人话，别留一片空白
     if (!Board) {
@@ -261,6 +276,9 @@
       selfScore: msg.selfScore,
       emptyText: '还没有好友在玩'
     };
+
+    // 卡片在固定画布里垂直居中（offsetY 是开放域算好的）
+    try { ctx.setTransform(dpr * k, 0, 0, dpr * k, offsetY * dpr * k, 0); } catch (e3) { /* ignore */ }
 
     if (st.error) {
       opts.emptyText = '暂时读不到好友数据';   // 不空白

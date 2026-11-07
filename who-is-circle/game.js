@@ -1421,15 +1421,22 @@
     if (odLogState !== 1) {
       odLogState = 1;
     }
-    var ar = sc.width / sc.height;
-    var w = rect.w, h = rect.w / ar;
-    if (h > rect.h) { h = rect.h; w = rect.h * ar; }
+    // 共享画布是**物理像素**的，而这里的矩形是**设计坐标**（ctx 上有 view.scale 的缩放）。
+    // 所以贴图尺寸（设计px）= 位图物理尺寸 / view.scale。
+    //
+    // ⚠️ **不要把位图缩放到位图尺寸里** —— 位图比目标小就会被放大 = 糊。
+    // 真机实测过（2026-11-07）：内容发虚、卡片只有 77% 宽。
+    // 现在按 1:1 物理像素贴：位图多大就画多大（清晰），再居中放进内容矩形。
+    var w = sc.width / view.scale;
+    var h = sc.height / view.scale;
+    if (w > rect.w) { h = h * rect.w / w; w = rect.w; }   // 比内容矩形宽 → 等比缩进去（不变形）
+    if (h > rect.h) { w = w * rect.h / h; h = rect.h; }
     if (odLogState === 1) {
       odLogState = 2;
-      // 共享画布是物理像素的；主域按设计坐标贴（ctx 上有 view.scale 的缩放）。
-      // 这两个数对不上 → 内容会被放大或裁切（真机上踩过），所以记一笔。
+      // 这几个数对不上 → 内容会被放大/裁切/错位（真机上踩过），所以记一笔
       odLog('共享画布 ' + sc.width + '×' + sc.height + '（物理px）→ 贴成设计 ' +
-            Math.round(w) + '×' + Math.round(h) + '，view.scale=' + view.scale.toFixed(3));
+            Math.round(w) + '×' + Math.round(h) + '，view.scale=' + view.scale.toFixed(3) +
+            '（画布=' + env.width + '×' + env.height + '）');
     }
     var x = rect.x + (rect.w - w) / 2;
     var y = rect.y + (rect.h - h) / 2;

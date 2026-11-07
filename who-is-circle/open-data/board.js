@@ -383,7 +383,10 @@
     var rowH = plan.rowH;
     var maxRows = plan.maxRows;
     var shown = plan.shown;
-    var H = plan.H;
+    // 卡高优先用调用方给的（o.boardH）——
+    // 开放数据域必须先把共享画布按这个高度建好（改 canvas.height 会清空画布），
+    // 两边各算一次就可能对不上（真机上出现过：画布比卡片高 → 下面多一条白带）。
+    var H = (typeof o.boardH === 'number' && o.boardH > 0) ? o.boardH : plan.H;
 
     ctx.save();
 

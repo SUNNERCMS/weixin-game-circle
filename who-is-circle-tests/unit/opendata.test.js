@@ -259,9 +259,11 @@ function makeFakeWx(opts) {
     ok(fake.calls.friend > before, 'showLeaderboard → 触发了一次拉取',
       'friend ' + before + ' → ' + fake.calls.friend);
     ok(fake.ctx.calls.length > 0, 'sharedCanvas 上画了东西（不是空白）', 'calls=' + fake.ctx.calls.length);
-    // 画布高度**跟着行数走**（卡高自适应）：标题 104 + 3 行×96 + 底部 88 = 480，再 ×dpr2
-    ok(fake.canvas.width === 1400 && fake.canvas.height === 960,
-      '画布按 设计px × pixelRatio 建，且高度跟着行数走', fake.canvas.width + '×' + fake.canvas.height);
+    // 画布是**固定尺寸**（700×1180 设计px × scale），不随后续帧改 ——
+    // 平台对共享画布的尺寸不一定照办（实测：被裁、且只涨不缩），
+    // 固定尺寸就不会出现「加载中那帧定的高度留着 → 卡片下面多一条白带」。
+    ok(fake.canvas.width === 1400 && fake.canvas.height === 2360,
+      '画布固定 = 700×1180 设计px × scale', fake.canvas.width + '×' + fake.canvas.height);
   }
   {
     const before = fake.calls.friend;
@@ -316,6 +318,34 @@ function makeFakeWx(opts) {
     ok(!threw, '头像加载失败 → 不崩');
   }
 
-  console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
+  section('八、画布尺寸跨帧不变（平台只涨不缩 → 卡片下面会多一条白带）');
+
+{
+  // 真机上踩过：平台对共享画布的尺寸不一定照办 —— 设了 700×1180 之后，
+  // 后面再设更小的尺寸**不生效**（只涨不缩），于是"加载中"那帧定下的
+  // 大画布一直留着，卡片只占上面一块 → 下面多出一条白带。
+  // 所以画布必须是**固定尺寸**，每帧都一样。
+  const RN = ['灾难现场', '一团面条', '土豆', '饺子', '鸡蛋', '甜甜圈', '饼干',
+    '轮胎', '满月', '圆规', '教科书', '精密仪器', '神之圆'];
+  const fake = makeFakeWx({
+    friends: [friendEntry('o_1', '小明', 97.8, 11), friendEntry('o_2', '小红', 92.4, 9)],
+    self: [{ KVDataList: [{ key: 'circle', value: hosting(88, 9) }] }]
+  });
+  global.wx = fake;
+  delete require.cache[require.resolve('../../who-is-circle/open-data/index.js')];
+  const OD = require('../../who-is-circle/open-data/index.js');
+  const msg = { type: 'showLeaderboard', key: 'circle', width: 700, height: 1180, scale: 2,
+    rankNames: RN, style: {} };
+  OD.handleMessage(msg, fake);
+  const w1 = fake.canvas.width, h1 = fake.canvas.height;
+  // 数据到了之后再画一次（画布尺寸不能变）
+  await new Promise((r) => setTimeout(r, 30));
+  OD.handleMessage(msg, fake);
+  ok(fake.canvas.width === w1 && fake.canvas.height === h1,
+    '数据到了之后画布尺寸不变', w1 + '×' + h1 + ' → ' + fake.canvas.width + '×' + fake.canvas.height);
+  ok(w1 === 1400 && h1 === 2360, '画布固定 = 700×1180 设计px × scale', w1 + '×' + h1);
+}
+
+console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
   process.exit(fail ? 1 : 0);
 })();
