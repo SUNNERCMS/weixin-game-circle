@@ -390,9 +390,19 @@ P1 时代首页那块占位（深蓝底「好友榜 · P1 占位」）P4 起换�
 **看日志**（真机调试模式）：
 
 ```
+[rank] authSetting[scope.WxFriendInteraction] = undefined → unset
+[rank] 未决定 → 请求授权 scope.WxFriendInteraction
+[rank] 已授权 → 打开榜面
 [open-data] 已连通 sharedCanvas 1400×2360     ← 开放域画布建好了（设计px × dpr）
 [cloud] 托管数据写入成功 key=circle score=97.8
 ```
+
+> `[rank]` 这几行是**门禁诊断** —— 卡在哪一环一目了然（`undefined` = 从没问过，
+> `false` = 曾拒绝，`true` = 已授权）。
+>
+> ⚠️ **授权设置页（`wx.openSetting` 打开的那个「个人信息与权限使用记录」）只列本游戏
+> 实际申请过的权限** —— 没申请过的根本不列。所以「在里面找不到『向朋友公开』」
+> 通常说明**微信从未记录过这个游戏的申请**（scope 名写错 / 隐私指引没声明）。
 
 `[open-data] 放弃：重试 180 次仍未拿到可用的 sharedCanvas` → 通路没通
 （API 不可用 / 基础库太老 / `game.json` 配错），榜面会显示兜底块「好友榜还没准备好」。

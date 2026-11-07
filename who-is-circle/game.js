@@ -897,6 +897,18 @@
     return CFG.RANK_PANEL;
   }
 
+  // 门禁诊断日志 —— 真机调试时全靠它判断卡在哪一环
+  function rankLog(m) {
+    try { if (typeof console !== 'undefined' && console.log) console.log('[rank] ' + m); } catch (e) { /* ignore */ }
+  }
+
+  // 错误对象 → 一行可读文本（errMsg 通常是 'authorize:fail auth deny' 这种）
+  function msg(e) {
+    if (!e) return '(无)';
+    if (typeof e === 'string') return e;
+    return e.errMsg || e.message || JSON.stringify(e);
+  }
+
   function getWxApi(wxApi) {
     if (wxApi) return wxApi;
     return hasWx ? wx : null;
@@ -973,38 +985,43 @@
         state.rankPending = false;
         startTransition('rank', 1);
         postToOpenData(buildShowMessage(w), w);
+        rankLog('已授权 → 打开榜面');
         done('opened');
       }
-      function guideToSetting() {
+      function guideToSetting(reason) {
         // 玩家可能去设置页开了再回来 —— 回来时（onShow）要重新试一次
         state.rankPending = true;
+        rankLog('未授权（' + reason + '）→ 引导去设置页开「向朋友公开」');
         showToast('请在设置里开启「向朋友公开」');
         try { if (typeof w.openSetting === 'function') w.openSetting({}); } catch (e) { /* ignore */ }
         done('denied');
       }
       function askAuthorize() {
-        if (typeof w.authorize !== 'function') { guideToSetting(); return; }
+        if (typeof w.authorize !== 'function') { guideToSetting('无 authorize 接口'); return; }
+        rankLog('未决定 → 请求授权 ' + FRIEND_SCOPE);
         try {
           w.authorize({
             scope: FRIEND_SCOPE,
             success: function () { goRank(); },
-            fail: function () { guideToSetting(); }
+            fail: function (e) { guideToSetting('授权被拒 ' + msg(e)); }
           });
-        } catch (e) { guideToSetting(); }
+        } catch (e) { guideToSetting('authorize 抛错 ' + msg(e)); }
       }
       try {
-        if (typeof w.getSetting !== 'function') { guideToSetting(); return; }
+        if (typeof w.getSetting !== 'function') { guideToSetting('无 getSetting 接口'); return; }
         w.getSetting({
           success: function (res) {
             var auth = (res && res.authSetting) ? res.authSetting[FRIEND_SCOPE] : undefined;
             var st = LeaderboardBridge.classifyPrivacy(auth);
+            rankLog('authSetting[' + FRIEND_SCOPE + '] = ' + String(auth) + ' → ' + st);
             if (st === 'granted') goRank();
-            else if (st === 'denied') guideToSetting();
+            else if (st === 'denied') guideToSetting('曾拒绝');
             else askAuthorize();
           },
-          fail: function () { askAuthorize(); }
+          fail: function (e) { rankLog('getSetting 失败 → 试 authorize ' + msg(e)); askAuthorize(); }
         });
       } catch (e) {
+        rankLog('getSetting 抛错 ' + msg(e));
         done('error');
       }
     });
