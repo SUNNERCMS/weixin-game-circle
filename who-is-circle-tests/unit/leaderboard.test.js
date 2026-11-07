@@ -121,5 +121,160 @@ section('五、classifyPrivacy —— 隐私设置三态');
   ok(LB.classifyPrivacy('true') === 'unset', '非布尔值 → unset（不猜）');
 }
 
-console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
-process.exit(fail ? 1 : 0);
+section('六、game.js 的榜面接线');
+
+// ---------------------------------------------------------------------------
+// 主域这一侧：入口按钮 / overlay 页 / 隐私门禁
+// ---------------------------------------------------------------------------
+
+const G = require('../../who-is-circle/game.js');
+
+ok(typeof G.openLeaderboard === 'function', 'game.js 导出 openLeaderboard');
+ok(typeof G.closeLeaderboard === 'function', 'game.js 导出 closeLeaderboard');
+ok(typeof G.rankPanelLayout === 'function', 'game.js 导出 rankPanelLayout');
+ok(typeof G.resendShowOnShow === 'function', 'game.js 导出 resendShowOnShow');
+
+{
+  const L = G.rankPanelLayout();
+  ok(L.content && L.content.x === 25 && L.content.y === 210 && L.content.w === 700 && L.content.h === 1180,
+    '内容矩形 = (25,210,700,1180)', L.content ? JSON.stringify(L.content) : '(无)');
+  ok(L.title && L.title.y < L.content.y, '标题在内容矩形上方');
+  ok(L.backBtn && (L.backBtn.y - L.backBtn.h / 2) > (L.content.y + L.content.h),
+    '底部「返回」按钮不与内容矩形重叠');
+  ok(L.backBtn && (L.backBtn.y + L.backBtn.h / 2) <= 1624, '底部按钮在屏幕内');
+  ok(G.CFG.RANK_BTN && G.CFG.RANK_BTN.w >= 88 && G.CFG.RANK_BTN.h >= 88,
+    '首页入口按钮热区 ≥ 88×88', G.CFG.RANK_BTN ? (G.CFG.RANK_BTN.w + '×' + G.CFG.RANK_BTN.h) : '(无)');
+}
+
+function fakeWxApi(opts) {
+  opts = opts || {};
+  const rec = { messages: [], openSetting: 0, authorize: 0 };
+  rec.api = {
+    getSetting: function (o) {
+      if (opts.getSettingThrows) throw new Error('boom');
+      o.success({ authSetting: { 'scope.friendCloudStorage': opts.auth } });
+    },
+    authorize: function (o) {
+      rec.authorize++;
+      if (opts.authorizeFails) o.fail({ errMsg: 'authorize:fail' });
+      else o.success({});
+    },
+    openSetting: function (o) { rec.openSetting++; if (o && o.success) o.success({}); },
+    getOpenDataContext: function () {
+      return { postMessage: function (m) { rec.messages.push(m); } };
+    }
+  };
+  return rec;
+}
+
+function resetState() {
+  G.state.trans = null;
+  G.state.page = 'home';
+  G.state.toast = null;
+  G.state.pressedBtn = null;
+  G.state.rankPending = false;
+}
+
+(async function () {
+  section('七、隐私门禁三态');
+
+  {
+    // 已授权 → 直接进榜面页 + 发消息
+    resetState();
+    const rec = fakeWxApi({ auth: true });
+    const r = await G.openLeaderboard(rec.api);
+    ok(r && r.status === 'opened', '已授权 → opened', r && r.status);
+    ok(G.state.trans && G.state.trans.to === 'rank', '切到榜面页');
+    ok(rec.messages.length === 1 && rec.messages[0].type === 'showLeaderboard',
+      '向开放域发了 showLeaderboard', rec.messages.length + ' 条');
+    ok(rec.messages[0].rankNames && rec.messages[0].rankNames.length === 13, '消息里带了段位名表');
+    ok(rec.messages[0].style && rec.messages[0].style.rowH === 96, '消息里带了样式参数');
+    ok(rec.messages[0].width === 700 && rec.messages[0].height === 1180, '内容矩形尺寸带上了');
+    ok(rec.messages[0].key === 'circle', '托管数据 key 带上了', rec.messages[0].key);
+  }
+  {
+    // 曾拒绝 → 不进榜面，引导去设置页
+    resetState();
+    const rec = fakeWxApi({ auth: false });
+    const r = await G.openLeaderboard(rec.api);
+    ok(r && r.status === 'denied', '曾拒绝 → denied（不是 opened）', r && r.status);
+    ok(!G.state.trans || G.state.trans.to !== 'rank', '不进榜面页');
+    ok(rec.openSetting === 1, '引导去设置页（wx.openSetting）', 'openSetting=' + rec.openSetting);
+    ok(rec.authorize === 0, '曾拒绝就不该再弹 authorize（会直接失败、吓人）', 'authorize=' + rec.authorize);
+    ok(G.state.toast && G.state.toast.text, '给了提示文案', G.state.toast ? G.state.toast.text : '(无)');
+  }
+  {
+    // 还没决定 → 先 authorize
+    resetState();
+    const rec = fakeWxApi({ auth: undefined });
+    const r = await G.openLeaderboard(rec.api);
+    ok(rec.authorize === 1, '未决定 → 先 authorize', 'authorize=' + rec.authorize);
+    ok(r && r.status === 'opened', 'authorize 成功 → 进榜面', r && r.status);
+    ok(G.state.trans && G.state.trans.to === 'rank', '切到榜面页');
+  }
+  {
+    // 还没决定 + authorize 失败 → 引导去设置页
+    resetState();
+    const rec = fakeWxApi({ auth: undefined, authorizeFails: true });
+    const r = await G.openLeaderboard(rec.api);
+    ok(r && r.status === 'denied', 'authorize 失败 → denied', r && r.status);
+    ok(!G.state.trans || G.state.trans.to !== 'rank', '不进榜面页');
+    ok(rec.openSetting === 1, '转去设置页', 'openSetting=' + rec.openSetting);
+  }
+  {
+    // wx 抛异常 → 不崩、不进榜面
+    resetState();
+    let threw = false, res = null;
+    try { res = await G.openLeaderboard(fakeWxApi({ getSettingThrows: true }).api); } catch (e) { threw = true; }
+    ok(!threw, 'getSetting 抛异常 → 不崩');
+    ok(res && res.status === 'error', '状态是 error', res && res.status);
+    ok(!G.state.trans || G.state.trans.to !== 'rank', '不进榜面页');
+  }
+  {
+    // 没有微信环境 → 什么都不做
+    resetState();
+    let threw = false, res = null;
+    try { res = await G.openLeaderboard(null); } catch (e) { threw = true; }
+    ok(!threw, '没有 wx → 不崩');
+    ok(res && res.status === 'unavailable', '状态是 unavailable', res && res.status);
+    ok(!G.state.trans || G.state.trans.to !== 'rank', '不进榜面页（浏览器端没有好友榜）');
+  }
+
+  section('八、关闭与补发');
+
+  {
+    resetState();
+    const rec = fakeWxApi({ auth: true });
+    await G.openLeaderboard(rec.api);
+    const before = rec.messages.length;
+    G.closeLeaderboard(rec.api);
+    ok(G.state.trans && G.state.trans.to === 'home', '关闭 → 回首页');
+    ok(rec.messages.length === before + 1 && rec.messages[before].type === 'hideLeaderboard',
+      '向开放域发了 hideLeaderboard');
+  }
+  {
+    // 共享画布在 onShow / 页面切换后会丢内容 → 主域要补发一次 showLeaderboard
+    resetState();
+    const rec = fakeWxApi({ auth: true });
+    await G.openLeaderboard(rec.api);
+    G.state.page = 'rank';
+    const before = rec.messages.length;
+    const sent = G.resendShowOnShow(rec.api);
+    ok(sent === true, '在榜面页 → 补发', String(sent));
+    ok(rec.messages.length === before + 1 && rec.messages[before].type === 'showLeaderboard',
+      '补发的是 showLeaderboard');
+  }
+  {
+    resetState();
+    const rec = fakeWxApi({ auth: true });
+    const sent = G.resendShowOnShow(rec.api);
+    ok(sent === false, '不在榜面页 → 不补发', String(sent));
+    ok(rec.messages.length === 0, '没有消息发出');
+  }
+})().then(function () {
+  console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
+  process.exit(fail ? 1 : 0);
+}, function (e) {
+  console.error('测试执行出错：', e);
+  process.exit(1);
+});

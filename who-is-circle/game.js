@@ -25,6 +25,12 @@
     : ((typeof GameGlobal !== 'undefined' && GameGlobal.CloudClient) ||
        (typeof window !== 'undefined' && window.CloudClient) || null);
 
+  // 榜单桥接（P4）：**可选依赖** —— 加载不到就当"没有好友榜"，玩法完全不受影响
+  var LeaderboardBridge = (typeof module === 'object' && module && module.exports && typeof require === 'function')
+    ? (function () { try { return require('./js/leaderboard.js'); } catch (e) { return null; } })()
+    : ((typeof GameGlobal !== 'undefined' && GameGlobal.Leaderboard) ||
+       (typeof window !== 'undefined' && window.Leaderboard) || null);
+
   var SCORE_CFG = Scoring.SCORE_CFG;
   var GUARD_CFG = Scoring.GUARD_CFG;
   var RANKS = Scoring.RANKS;
@@ -92,8 +98,19 @@
     ICON_BTN_R: 48,      // 顶栏图标热区半径（96×96 设计px，满足触摸标准）
     ICON_SIZE: 40,       // 图标视觉直径
     // P1：开放数据域占位内容在首页的贴图矩形（左上角 + 尺寸，设计px）
-    // 真正的榜单入口与榜面由 P5 替换本占位
+    // P4 起首页这块位置改成「好友排行」入口按钮（见 RANK_BTN）
     OD_PLACEHOLDER: { x: 125, y: 800, w: 500, h: 96 },
+    // ---- P4：好友榜 ----
+    // 首页入口（次级按钮）：logo 与「开画」之间。
+    // 设计文档 §8.1 写的是 y=772 —— 那个坐标没算上「最佳 XX · 段位」那一行
+    // （它在 y=740），按钮会压到字上，所以往下挪到 830。
+    RANK_BTN: { x: 375, y: 830, w: 280, h: 88 },
+    RANK_PANEL: {
+      mask: { x: 0, y: 0, w: 750, h: 1624 },
+      title: { x: 375, y: 150 },
+      content: { x: 25, y: 210, w: 700, h: 1180 },   // 开放数据域画的榜面贴在这里
+      backBtn: { x: 375, y: 1500, w: 340, h: 96 }
+    },
     MAX_POINTS: 900,     // 笔迹点上限：超出后均匀抽稀，避免长笔迹被硬截断而画面冻结
 
     // ---- 云端（P3）----
@@ -121,6 +138,9 @@
    * 二、环境适配层（约 60 行，上层逻辑只调 env）
    * ============================================================ */
   var hasWx = typeof wx !== 'undefined' && typeof wx.createCanvas === 'function';
+  // 好友榜（P4）：入口按钮**两个环境都显示** —— 浏览器端没有好友关系链，
+  // 点了会提示「要在微信里看」，但界面长得一样才敢信（也才敢用 e2e 断言它存在）
+  var rankEnabled = !!LeaderboardBridge;
 
   // 最小画布桩：仅用于 Node 下跑评分引擎单测（浏览器/小游戏走真实 canvas）
   var stubCtx = {
@@ -437,6 +457,16 @@
     wx.onWindowResize(resize);
   } else if (typeof window !== 'undefined') {
     window.addEventListener('resize', resize);
+  }
+
+  // 从后台切回来：补发一次 showLeaderboard。
+  // 原因有二（设计文档 §十二 风险表）：
+  //   1. sharedCanvas 在页面切换 / onShow 后内容会丢 → 开放域要重画
+  //   2. 玩家可能刚在设置页开了「向朋友公开」→ 门禁要重新走一遍
+  if (hasWx && wx.onShow) {
+    wx.onShow(function () {
+      try { resendShowOnShow(); } catch (e) { /* ignore */ }
+    });
   }
 
   if (!hasWx && typeof document !== 'undefined') {
@@ -832,6 +862,7 @@
     trans: null,             // {from,to,t0,dir}
     pressedBtn: null,        // {id, t0}（按住中）
     btnRelease: null,        // {id, t0}（松手回弹动画中）
+    rankPending: false,      // 好友榜：等玩家在设置页开完「向朋友公开」再回来
     result: null             // 结算数据（直接画在画布上，无浮层）
   };
 
@@ -858,6 +889,147 @@
     state.drawing = false;
     state.result = null;
     startTransition('home', -1);
+  }
+
+  /* ---------- 好友榜（P4）---------- */
+
+  function rankPanelLayout() {
+    return CFG.RANK_PANEL;
+  }
+
+  function getWxApi(wxApi) {
+    if (wxApi) return wxApi;
+    return hasWx ? wx : null;
+  }
+
+  // 主域 → 开放域（单向）。老基础库没有这个 API → 静默降级。
+  function postToOpenData(msg, wxApi) {
+    var w = getWxApi(wxApi);
+    if (!w || typeof w.getOpenDataContext !== 'function') return false;
+    try {
+      var odc = w.getOpenDataContext();
+      if (!odc || typeof odc.postMessage !== 'function') return false;
+      odc.postMessage(msg);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function buildShowMessage(wxApi) {
+    if (!LeaderboardBridge) return null;
+    var best = (typeof state.best === 'number') ? state.best : null;
+    var level = null;
+    if (best !== null) {
+      var rk = getRank(best);
+      level = RANKS.indexOf(rk.rank);
+      if (level < 0) level = null;
+    }
+    return LeaderboardBridge.buildShowMessage({
+      key: CFG.CLOUD_KEY,
+      selfScore: best,
+      selfLevel: level,
+      width: CFG.RANK_PANEL.content.w,
+      height: CFG.RANK_PANEL.content.h,
+      pixelRatio: env.dpr,
+      rankNames: LeaderboardBridge.resolveRankNames(RANKS),
+      style: LeaderboardBridge.buildStyleParams()
+    });
+  }
+
+  /**
+   * 打开好友榜。
+   *
+   * 先过**隐私门禁**（设计文档 §8.3）：`scope.friendCloudStorage` 是隐私设置，
+   * 不是普通授权，处理用三态：
+   *   已授权 → 直接开
+   *   曾拒绝 → 只能引导去设置页手动打开
+   *   没决定 → 先 authorize，失败再引导去设置页
+   *
+   * 门禁放在"玩家主动点开排行榜"这一刻（不是一进游戏就弹 —— 首屏要授权转化率很难看）。
+   *
+   * @returns {Promise<{status:string}>} status: opened / denied / unavailable / error
+   */
+  function openLeaderboard(wxApi) {
+    var w = getWxApi(wxApi);
+    if (!w || !LeaderboardBridge) {
+      // 浏览器端：没有微信环境，好友关系链读不到 —— 说清楚，别让人以为按钮坏了
+      showToast('好友榜要在微信里看哦');
+      return Promise.resolve({ status: 'unavailable' });
+    }
+    return new Promise(function (resolve) {
+      var settled = false;
+      function done(status) {
+        if (settled) return;
+        settled = true;
+        resolve({ status: status });
+      }
+      function goRank() {
+        state.rankPending = false;
+        startTransition('rank', 1);
+        postToOpenData(buildShowMessage(w), w);
+        done('opened');
+      }
+      function guideToSetting() {
+        // 玩家可能去设置页开了再回来 —— 回来时（onShow）要重新试一次
+        state.rankPending = true;
+        showToast('请在设置里开启「向朋友公开」');
+        try { if (typeof w.openSetting === 'function') w.openSetting({}); } catch (e) { /* ignore */ }
+        done('denied');
+      }
+      function askAuthorize() {
+        if (typeof w.authorize !== 'function') { guideToSetting(); return; }
+        try {
+          w.authorize({
+            scope: 'scope.friendCloudStorage',
+            success: function () { goRank(); },
+            fail: function () { guideToSetting(); }
+          });
+        } catch (e) { guideToSetting(); }
+      }
+      try {
+        if (typeof w.getSetting !== 'function') { guideToSetting(); return; }
+        w.getSetting({
+          success: function (res) {
+            var auth = (res && res.authSetting) ? res.authSetting['scope.friendCloudStorage'] : undefined;
+            var st = LeaderboardBridge.classifyPrivacy(auth);
+            if (st === 'granted') goRank();
+            else if (st === 'denied') guideToSetting();
+            else askAuthorize();
+          },
+          fail: function () { askAuthorize(); }
+        });
+      } catch (e) {
+        done('error');
+      }
+    });
+  }
+
+  function closeLeaderboard(wxApi) {
+    var w = getWxApi(wxApi);
+    state.rankPending = false;
+    if (LeaderboardBridge) postToOpenData(LeaderboardBridge.buildHideMessage(), w);
+    startTransition('home', -1);
+  }
+
+  /**
+   * 从后台切回来时补发。
+   *
+   * 两个原因要补：
+   *   1. `sharedCanvas` 在页面切换 / onShow 后内容会丢 → 开放域要重画
+   *   2. 玩家刚在设置页开了「向朋友公开」→ 门禁要重新走一遍
+   */
+  function resendShowOnShow(wxApi) {
+    var w = getWxApi(wxApi);
+    if (state.rankPending) {
+      state.rankPending = false;
+      openLeaderboard(w);
+      return true;
+    }
+    var inRank = (state.page === 'rank') || (state.trans && state.trans.to === 'rank');
+    if (!inRank) return false;
+    if (!LeaderboardBridge) return false;
+    return postToOpenData(buildShowMessage(w), w);
   }
 
   // 点击跳过结算动画：把时间轴直接推到终点
@@ -1045,6 +1217,16 @@
         state.pressedBtn = { id: 'start', t0: env.now() };
         return;
       }
+      // 主页「好友排行」
+      if (state.page === 'home' && !state.trans && rankEnabled && hitBtn(x, y, CFG.RANK_BTN)) {
+        state.pressedBtn = { id: 'rank', t0: env.now() };
+        return;
+      }
+      // 好友榜页底部「返回」
+      if (state.page === 'rank' && !state.trans && hitBtn(x, y, CFG.RANK_PANEL.backBtn)) {
+        state.pressedBtn = { id: 'rankBack', t0: env.now() };
+        return;
+      }
       // 画圆页起笔
       if (state.page === 'draw' && !state.trans && !state.result) {
         state.points.length = 0;   // 只在起笔时清空
@@ -1086,10 +1268,18 @@
         var activated =
           (id === 'start' && hitBtn(x, y, CFG.START_BTN)) ||
           (id === 'again' && hitBtn(x, y, AGAIN_BTN)) ||
+          (id === 'rank' && hitBtn(x, y, CFG.RANK_BTN)) ||
+          (id === 'rankBack' && hitBtn(x, y, CFG.RANK_PANEL.backBtn)) ||
           (id === 'back' && hitIcon(x, y) === 'back');
         if (activated && id === 'start') goDraw();
         else if (activated && id === 'again') { state.result = null; state.points.length = 0; state.raw.length = 0; state.drawing = false; }
-        else if (activated && id === 'back') goHome();
+        else if (activated && id === 'rank') openLeaderboard();
+        else if (activated && id === 'rankBack') closeLeaderboard();
+        else if (activated && id === 'back') {
+          // 好友榜页的返回箭头 = 关榜面；画圆页的返回箭头 = 回首页
+          if (state.page === 'rank') closeLeaderboard();
+          else goHome();
+        }
         return;
       }
       if (state.discardGesture) { state.discardGesture = false; return; }
@@ -1171,52 +1361,50 @@
 
   // 开放数据域贴不上时画一块**明确不同**的兜底块。
   //
-  // 为什么要可见：P1 要在真机上确认「开放数据域通路通不通」，
-  // 而"什么都没画"同时对应三种原因（通路没通 / 尺寸为 0 / 画到屏幕外）——没法判定。
-  // 画出来就是二值判定：深蓝块 = 通了，灰块 = 没通。
-  // 这块占位内容 P4/P5 会被真正的榜面替换掉，属于临时脚手架。
-  function drawOdFallback(c) {
-    var r = CFG.OD_PLACEHOLDER;
+  // 为什么要可见："什么都没画"同时对应三种原因（通路没通 / 尺寸为 0 / 画到屏幕外）
+  // ——没法判定。画出来就是二值判定：贴上了 = 通了，灰块 = 没通。
+  function drawOdFallback(c, rect, title, sub) {
+    var r = rect || CFG.OD_PLACEHOLDER;
     c.save();
     c.fillStyle = 'rgba(110,104,94,0.10)';
     c.fillRect(r.x, r.y, r.w, r.h);
     c.strokeStyle = 'rgba(110,104,94,0.35)';
     c.lineWidth = 2;
     c.strokeRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
-    fillText(c, '开放数据域未连通', r.x + r.w / 2, r.y + r.h / 2 - 12, 'bold 30px sans-serif', COL.grayText);
-    fillText(c, '（占位 · P1 待真机验证）', r.x + r.w / 2, r.y + r.h / 2 + 22, '24px sans-serif', COL.grayText);
+    fillText(c, title || '开放数据域未连通', r.x + r.w / 2, r.y + r.h / 2 - 12, 'bold 30px sans-serif', COL.grayText);
+    if (sub) fillText(c, sub, r.x + r.w / 2, r.y + r.h / 2 + 22, '24px sans-serif', COL.grayText);
     c.restore();
   }
 
-  // 把开放数据域画好的内容贴到主域画布
+  // 把开放数据域画好的内容贴到主域画布的某个矩形里。
   // 按 sharedCanvas 的实际宽高比等比居中 —— 开放数据域改了尺寸也不会拉伸变形，
   // 主域也不必和它约定死尺寸（少一份会漂移的常量）。
-  function drawOpenData(c) {
+  // @returns {boolean} 贴上了没有（false = 主域可以自己画兜底）
+  function drawSharedCanvas(c, rect) {
     var sc = getOdCanvas();
     if (!sc || !sc.width || !sc.height) {
-      // 没通 → 画兜底块，让"通没通"一眼可判；日志里也留一句，断在哪一目了然
+      // 没通 → 日志里留一句，断在哪一目了然
       if (odLogState === 0 && odCanvasTried >= OD_GET_RETRY) {
         odLogState = 2;
         odLog('放弃：重试 ' + odCanvasTried + ' 次仍未拿到可用的 sharedCanvas');
       }
-      drawOdFallback(c);
-      return;
+      return false;
     }
     if (odLogState !== 1) {
       odLogState = 1;
       odLog('已连通 sharedCanvas ' + sc.width + '×' + sc.height);
     }
-    var r = CFG.OD_PLACEHOLDER;
     var ar = sc.width / sc.height;
-    var w = r.w, h = r.w / ar;
-    if (h > r.h) { h = r.h; w = r.h * ar; }
-    var x = r.x + (r.w - w) / 2;
-    var y = r.y + (r.h - h) / 2;
+    var w = rect.w, h = rect.w / ar;
+    if (h > rect.h) { h = rect.h; w = rect.h * ar; }
+    var x = rect.x + (rect.w - w) / 2;
+    var y = rect.y + (rect.h - h) / 2;
     try {
       c.drawImage(sc, x, y, w, h);
+      return true;
     } catch (e) {
       // 贴不上就当没有这一块 —— 开放数据域是可选能力，不能因此影响主玩法
-      drawOdFallback(c);
+      return false;
     }
   }
 
@@ -1246,8 +1434,10 @@
     } else {
       fillText(c, '还没有成绩，画一个试试', 375, bestY, '34px sans-serif', COL.grayText);
     }
-    // 开放数据域占位（P1）：好友榜内容由开放数据域画，这里只负责贴出来
-    drawOpenData(c);
+    // 好友榜入口（P4）：次级按钮，在「最佳成绩」与「开画」之间
+    if (rankEnabled) {
+      drawButton(c, CFG.RANK_BTN, '好友排行', pressedRatio('rank'), false);
+    }
     // 开画按钮
     drawButton(c, CFG.START_BTN, '开 画', pressedRatio('start'), true);
     // 底部说明
@@ -1257,6 +1447,31 @@
     for (var hi = 0; hi < hIcons.length; hi++) {
       drawIcon(c, hIcons[hi].id, hIcons[hi].x, hIcons[hi].y, CFG.ICON_SIZE);
     }
+    c.restore();
+  }
+
+  // ---- 好友榜页（P4）----
+  //
+  // 榜面**内容**是开放数据域画的（它才读得到好友昵称/头像/分数），
+  // 主域只负责：遮罩、标题、把它贴出来、关闭按钮。
+  // 底部那行「我的历史最高 · 第 N 名」也在开放域里 —— 开放域 → 主域是单向的，
+  // 名次算好了也传不回来。
+  function renderRank(c, alpha, dx) {
+    c.save();
+    c.globalAlpha = alpha;
+    c.translate(dx, 0);
+    var L = CFG.RANK_PANEL;
+    // 遮罩
+    c.fillStyle = 'rgba(44,44,42,0.55)';
+    c.fillRect(L.mask.x, L.mask.y, L.mask.w, L.mask.h);
+    // 标题
+    fillText(c, '好友排行', L.title.x, L.title.y, 'bold 44px sans-serif', '#FFFFFF');
+    // 榜面内容
+    if (!drawSharedCanvas(c, L.content)) {
+      drawOdFallback(c, L.content, '好友榜还没准备好', '（开放数据域未连通）');
+    }
+    // 底部返回
+    drawButton(c, L.backBtn, '返回', pressedRatio('rankBack'), false);
     c.restore();
   }
 
@@ -1523,8 +1738,9 @@
     c.globalAlpha = a;
     c.font = '34px sans-serif';
     var w = c.measureText(state.toast.text).width + 72;
-    // 屏幕上 1/3 处（y≈541），避开顶部「最佳」与底部按钮
-    var ty = Math.round(CFG.DESIGN_H / 3);
+    // 画圆页：屏幕上 1/3 处（y≈541），避开顶部「最佳」与底部按钮
+    // 首页：logo 占着 420..700，落在 1/3 处会盖住标题 → 挪到「开画」按钮下方
+    var ty = (state.page === 'home') ? 1120 : Math.round(CFG.DESIGN_H / 3);
     roundRect(c, 375 - w / 2, ty - 46, w, 92, 46);
     c.fillStyle = 'rgba(44,44,42,0.92)';
     c.fill();
@@ -1576,6 +1792,7 @@
 
   function renderPage(name, alpha, dx) {
     if (name === 'home') renderHome(ctx, alpha, dx);
+    else if (name === 'rank') renderRank(ctx, alpha, dx);
     else renderDraw(ctx, alpha, dx);
   }
 
@@ -1645,6 +1862,11 @@
       largestGap: largestGap, INVALID_TIPS: INVALID_TIPS, BEST_SALT: BEST_SALT,
       resolveSharedCanvas: resolveSharedCanvas,
       createCloudClient: createCloudClient,
+      // 好友榜（P4）：主域这一侧的接线（单测钩子）
+      openLeaderboard: openLeaderboard,
+      closeLeaderboard: closeLeaderboard,
+      resendShowOnShow: resendShowOnShow,
+      rankPanelLayout: rankPanelLayout,
       // 结算链路（P3）的集成测试钩子：state 是运行时状态，onCloudSettled 是云端结论落地的入口
       state: state, onCloudSettled: onCloudSettled,
       RANKS: RANKS, SCORE_CFG: SCORE_CFG, GUARD_CFG: GUARD_CFG, CFG: CFG
