@@ -207,42 +207,36 @@
     var height = (typeof msg.height === 'number' && msg.height > 0) ? msg.height : 0;
     if (!width || !height) return;       // 还没收到消息 → 画布先空着
 
-    var dpr = (typeof msg.scale === 'number' && msg.scale > 0) ? msg.scale : getDpr(w);
+    // ---- 共享画布 = 屏幕大小（逻辑px）----
+    //
+    // 真机实测（2026-11-07）：我请求 700×scale = 1126×1897，平台给的是 **402×874**
+    // —— 正是屏幕的**逻辑像素**（1206×2622 ÷ dpr 3）。**平台不接受别的尺寸。**
+    //
+    // 所以别跟平台抢尺寸：画布就按屏幕逻辑尺寸建，
+    // 内容用「设计px → 逻辑px」的比例画（designScale = 屏幕逻辑宽 / 750），
+    // 主域再把位图 **1:1 贴到整屏**（位图后备缓冲 = 主域画布的物理尺寸）→ 必然清晰。
+    var cw = (typeof msg.canvasW === 'number' && msg.canvasW > 0) ? msg.canvasW : width;
+    var ch = (typeof msg.canvasH === 'number' && msg.canvasH > 0) ? msg.canvasH : height;
+    var ds = (typeof msg.designScale === 'number' && msg.designScale > 0) ? msg.designScale : 1;
 
-    // ---- 共享画布的尺寸：固定成一个「最大画布」，不随后续帧改 ----
-    //
-    // 为什么固定：改 canvas.width/height 会清空画布，而且**平台不一定会照办** ——
-    // 真机上实测过：平台把尺寸裁到屏幕大小（赋值被忽略/被裁），
-    // 而且**只涨不缩**（先画的「加载中」那帧定了高度，后来的小画布不生效）→
-    // 卡片下面多出一条白带。
-    //
-    // 所以：画布固定 700×1180（设计px），卡片在里面**居中**画（高度自适应）。
-    // 这样每帧的画布尺寸都一样 → 不会被裁、不会残留、不会多出白带。
-    var wantW = Math.round(width * dpr);
-    var wantH = Math.round(height * dpr);
+    var wantW = Math.round(cw), wantH = Math.round(ch);
     var realW = 0, realH = 0, k = 1;
     try {
       canvas.width = wantW;
       canvas.height = wantH;
       realW = canvas.width;
       realH = canvas.height;
-      // 只按**宽度**补偿：卡片必须铺满位图宽度，否则主域按位图整体贴进来时，
-      // 卡片就只占位图的一部分 → 屏幕上卡片缩水（真机实测过：只有 77% 宽）。
-      // 高度不够就裁掉一点（宁可裁底，也不能让卡片缩窄）。
+      // 平台再裁就按比例补偿（内容跟着缩，别被裁掉）
       if (realW > 0 && wantW > 0 && realW !== wantW) k = realW / wantW;
-      // ⚠️ setTransform(a,b,c,d,e,f) 里 **e 是 X 平移、f 才是 Y 平移**。
-      //    之前把垂直居中的偏移塞进了 e → 整张卡片右移出屏幕，
-      //    真机表现为「屏幕上只剩一条窄边」（2026-11-07 踩过）。
-      ctx.setTransform(dpr * k, 0, 0, dpr * k, 0, 0);
-      // 显式清空：画布背景默认是白底，不清的话卡片四周会有一圈白
-      try { ctx.clearRect(0, 0, realW, realH); } catch (e2) { /* ignore */ }
+      if (realH > 0 && wantH > 0 && realH !== wantH) k = Math.min(k, realH / wantH);
       if (realW !== wantW || realH !== wantH) {
         odLog('画布尺寸与请求不符：请求 ' + wantW + '×' + wantH + ' 实际 ' + realW + '×' + realH +
               ' → 内容按 ' + k.toFixed(3) + ' 缩放补偿');
       }
     } catch (e) { /* 画布不可写就到此为止 */ }
+    var scale = ds * k;   // 设计px → 逻辑px
 
-    // 卡片高度自适应（1 个人的榜不该是张空卡），在固定画布里**垂直居中**
+    // 卡片高度自适应（1 个人的榜不该是张空卡）
     var boardH = height;
     try {
       if (Board && typeof Board.boardHeight === 'function') {
@@ -251,17 +245,33 @@
         });
       }
     } catch (e) { /* 算不出来就用传过来的高度 */ }
-    // 卡片在固定画布里垂直居中。
-    // ⚠️ setTransform 的平移量是**设备像素**（不是设计像素），所以这里不要再乘 dpr*k。
-    //    卡片在设备像素里的高度 = boardH（设计px）× dpr × k。
-    var offsetY = 0;
+
+    // 卡片画在主域指定的内容矩形里，垂直居中。
+    // ⚠️ setTransform(a,b,c,d,e,f)：**e = X 平移，f = Y 平移**，且平移量用**逻辑px**。
+    var rectX = (typeof msg.rectX === 'number') ? msg.rectX : 25;
+    var rectY = (typeof msg.rectY === 'number') ? msg.rectY : 210;
+    var cardX = rectX;
+    var cardY = rectY + Math.max(0, (height - boardH) / 2);
+    function useCardTransform() {
+      try {
+        ctx.setTransform(scale, 0, 0, scale, cardX * scale, cardY * scale);
+      } catch (e3) { /* ignore */ }
+    }
+    function useCanvasTransform() {
+      try { ctx.setTransform(scale, 0, 0, scale, 0, 0); } catch (e3) { /* ignore */ }
+    }
+
+    // 先清空整张画布（**在物理/画布坐标里清** —— 在变换后的坐标里清只会清掉一部分，
+    // 真机实测：上一帧的卡片残留成第二块白卡）。
     try {
-      offsetY = Math.max(0, Math.round((realH - boardH * dpr * k) / 2));
-    } catch (e) { /* ignore */ }
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, realW, realH);
+    } catch (e2) { /* ignore */ }
 
     // board.js 没加载上（require 失败）→ 画一句人话，别留一片空白
     if (!Board) {
       try {
+        useCardTransform();
         ctx.fillStyle = '#F7F5F0';
         ctx.fillRect(0, 0, width, height);
         ctx.fillStyle = '#8C8A82';
@@ -276,6 +286,7 @@
     var opts = {
       width: width,
       height: height,
+      boardH: boardH,
       style: msg.style,
       rankNames: msg.rankNames || [],
       avatarImages: state.avatars,
@@ -283,10 +294,7 @@
       emptyText: '还没有好友在玩'
     };
 
-    // 卡片在固定画布里垂直居中。
-    // ⚠️ setTransform(a,b,c,d,e,f)：**e = X 平移，f = Y 平移**。
-    //    Y 偏移必须放在 f 位 —— 放错位置整张卡片会横着跑出屏幕。
-    try { ctx.setTransform(dpr * k, 0, 0, dpr * k, 0, offsetY); } catch (e3) { /* ignore */ }
+    useCardTransform();
 
     if (st.error) {
       opts.emptyText = '暂时读不到好友数据';   // 不空白
@@ -299,16 +307,16 @@
       return;
     }
     Board.drawBoard(ctx, st.rows || [], opts);
-    if (DEBUG_OVERLAY) drawOdDebug(ctx);
+    if (DEBUG_OVERLAY) drawOdDebug(ctx, scale, realW, realH, wantW, wantH, k);
   }
 
   // 开发期诊断：把画布的**实际尺寸**画进位图顶部。
   // 开放数据域的日志在真机调试里要切 Contexts 才看得到，
   // 而这两行数字是判断「平台裁不裁剪共享画布」的唯一依据 —— 画出来，截图就能看。
   var DEBUG_OVERLAY = true;
-  function drawOdDebug(ctx) {
+  function drawOdDebug(ctx, sc, realW, realH, wantW, wantH, k) {
     try {
-      ctx.setTransform(dpr * k, 0, 0, dpr * k, 0, 0);   // 回到画布坐标（去掉垂直居中的偏移）
+      ctx.setTransform(sc, 0, 0, sc, 0, 0);   // 画布坐标（去掉卡片的居中偏移）
       ctx.fillStyle = 'rgba(0,0,0,0.72)';
       ctx.fillRect(0, 0, 700, 40);
       ctx.fillStyle = '#7CFFB2';

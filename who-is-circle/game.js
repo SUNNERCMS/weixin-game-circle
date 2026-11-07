@@ -952,6 +952,14 @@
       // 要让内容在屏幕上和主域一样大，共享画布的密度就得等于主域的 view.scale；
       // 传 dpr 会让内容被放大/裁切（真机上出现过文字被放大三倍、卡片被切掉右边）。
       scale: view.scale,
+      // 共享画布**只能是屏幕大小**（逻辑px）—— 平台不接受别的尺寸。
+      // 真机实测（2026-11-07）：请求 1126×1897，平台给的是 402×874
+      // （= 屏幕逻辑尺寸 1206×2622 ÷ dpr 3）。所以按屏幕尺寸画、主域 1:1 贴。
+      canvasW: Math.round(env.width / env.dpr),        // 逻辑宽
+      canvasH: Math.round(env.height / env.dpr),       // 逻辑高
+      designScale: (env.width / env.dpr) / CFG.DESIGN_W, // 设计px → 逻辑px
+      rectX: CFG.RANK_PANEL.content.x,                 // 内容矩形左上角（卡片画在这里）
+      rectY: CFG.RANK_PANEL.content.y,
       rankNames: LeaderboardBridge.resolveRankNames(RANKS),
       style: LeaderboardBridge.buildStyleParams()
     });
@@ -1423,6 +1431,9 @@
     if (odLogState !== 1) {
       odLogState = 1;
     }
+    // 共享画布 = 屏幕大小（逻辑px），它的后备缓冲 = 主域画布的物理尺寸 ——
+    // 所以按**整屏 1:1** 贴：既清晰又不变形。
+    // 卡片在画布里的位置由开放数据域决定（它按内容矩形画），主域不用知道。
     var pr = computePasteRect(sc, rect);
     var w = pr.w, h = pr.h;
     if (odLogState === 1) {
@@ -1452,12 +1463,17 @@
    * 主域只管「等比贴进矩形」—— 密度对上了就是 1:1，既不糊也不变形。
    */
   function computePasteRect(sc, rect) {
+    // 共享画布是**屏幕大小**（逻辑px）→ 贴满整屏，1:1 物理像素。
+    // 位图的宽高比与设计网格不一致时（不同机型），按位图比例算高度并垂直居中，
+    // 这样不会拉伸变形。
     var ar = (sc && sc.height > 0) ? (sc.width / sc.height) : 1;
-    var w = rect.w, h = rect.w / ar;
-    if (h > rect.h) { h = rect.h; w = rect.h * ar; }
+    var w = CFG.DESIGN_W;
+    var h = w / ar;
+    var maxH = CFG.DESIGN_H;
+    if (h > maxH) { h = maxH; w = h * ar; }
     return {
-      x: rect.x + (rect.w - w) / 2,
-      y: rect.y + (rect.h - h) / 2,
+      x: (CFG.DESIGN_W - w) / 2,
+      y: (CFG.DESIGN_H - h) / 2,
       w: w,
       h: h
     };

@@ -30,6 +30,8 @@
   var DEFAULT_WIDTH = 700;
   var DEFAULT_HEIGHT = 1180;
   var DEFAULT_SCALE = 1;   // 兜底：没有主域上下文时按 1:1 画
+  var DEFAULT_CANVAS_W = 750;   // 兜底：共享画布的逻辑宽（设计px）
+  var DEFAULT_CANVAS_H = 1624;  // 兜底：共享画布的逻辑高（设计px）
 
   // 样式参数 —— 设计文档 §6.4 钉死的值。
   // 为什么放在主域：开放域是独立沙盒，改样式要改一处（D9）。
@@ -95,6 +97,13 @@
       // ⚠️ 不是设备像素比 —— 共享画布是物理像素的，密度必须跟主域的缩放一致，
       // 否则内容会被放大/裁切（真机上踩过：文字放大三倍、卡片右边被切掉）
       scale: (typeof o.scale === 'number' && o.scale > 0) ? o.scale : DEFAULT_SCALE,
+      // 共享画布只能是屏幕大小（逻辑px）—— 平台不接受别的尺寸。
+      // 真机实测：请求 700×scale，平台给的是屏幕逻辑尺寸。
+      canvasW: (typeof o.canvasW === 'number' && o.canvasW > 0) ? o.canvasW : DEFAULT_CANVAS_W,
+      canvasH: (typeof o.canvasH === 'number' && o.canvasH > 0) ? o.canvasH : DEFAULT_CANVAS_H,
+      designScale: (typeof o.designScale === 'number' && o.designScale > 0) ? o.designScale : DEFAULT_SCALE,
+      rectX: (typeof o.rectX === 'number') ? o.rectX : 0,
+      rectY: (typeof o.rectY === 'number') ? o.rectY : 0,
       rankNames: names.slice(),
       style: style
     };

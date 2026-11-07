@@ -257,6 +257,7 @@ function makeFakeWx(opts) {
     const before = fake.calls.friend;
     fake.calls.onMessage({
       type: 'showLeaderboard', key: 'circle', width: 700, height: 1180, scale: 2,
+      canvasW: 402, canvasH: 874, designScale: 402 / 750, rectX: 25, rectY: 210,
       rankNames: ['灾难现场', '一团面条', '土豆', '饺子', '鸡蛋', '甜甜圈', '饼干', '轮胎', '满月', '圆规', '教科书', '精密仪器', '神之圆'],
       style: {}, selfScore: 80
     });
@@ -264,11 +265,13 @@ function makeFakeWx(opts) {
     ok(fake.calls.friend > before, 'showLeaderboard → 触发了一次拉取',
       'friend ' + before + ' → ' + fake.calls.friend);
     ok(fake.ctx.calls.length > 0, 'sharedCanvas 上画了东西（不是空白）', 'calls=' + fake.ctx.calls.length);
-    // 画布是**固定尺寸**（700×1180 设计px × scale），不随后续帧改 ——
-    // 平台对共享画布的尺寸不一定照办（实测：被裁、且只涨不缩），
-    // 固定尺寸就不会出现「加载中那帧定的高度留着 → 卡片下面多一条白带」。
-    ok(fake.canvas.width === 1400 && fake.canvas.height === 2360,
-      '画布固定 = 700×1180 设计px × scale', fake.canvas.width + '×' + fake.canvas.height);
+    // 画布 = **屏幕的逻辑尺寸**（平台只给这个 —— 真机实测：请求 1126×1897，
+    // 平台给 402×874 = 屏幕逻辑尺寸）。别跟平台抢尺寸，按它给的来。
+    ok(fake.canvas.width === 402 && fake.canvas.height === 874,
+      '画布 = 屏幕逻辑尺寸（canvasW×canvasH）', fake.canvas.width + '×' + fake.canvas.height);
+    // 画布尺寸 = 屏幕逻辑尺寸（平台只给这个）→ 不会被裁、不会只涨不缩
+    ok(fake.canvas.width === (fake.msg && fake.msg.canvasW ? fake.msg.canvasW : 402),
+      '画布宽度 = 消息里的 canvasW');
   }
   {
     const before = fake.calls.friend;
@@ -340,6 +343,7 @@ function makeFakeWx(opts) {
   delete require.cache[require.resolve('../../who-is-circle/open-data/index.js')];
   const OD = require('../../who-is-circle/open-data/index.js');
   const msg = { type: 'showLeaderboard', key: 'circle', width: 700, height: 1180, scale: 2,
+    canvasW: 402, canvasH: 874, designScale: 402 / 750, rectX: 25, rectY: 210,
     rankNames: RN, style: {} };
   OD.handleMessage(msg, fake);
   const w1 = fake.canvas.width, h1 = fake.canvas.height;
@@ -348,7 +352,7 @@ function makeFakeWx(opts) {
   OD.handleMessage(msg, fake);
   ok(fake.canvas.width === w1 && fake.canvas.height === h1,
     '数据到了之后画布尺寸不变', w1 + '×' + h1 + ' → ' + fake.canvas.width + '×' + fake.canvas.height);
-  ok(w1 === 1400 && h1 === 2360, '画布固定 = 700×1180 设计px × scale', w1 + '×' + h1);
+  ok(w1 === 402 && h1 === 874, '画布 = 屏幕逻辑尺寸（402×874）', w1 + '×' + h1);
 }
 
 section('九、跨域尺寸契约（主域 ↔ 开放域）');
@@ -368,6 +372,7 @@ section('九、跨域尺寸契约（主域 ↔ 开放域）');
   delete require.cache[require.resolve('../../who-is-circle/open-data/index.js')];
   const OD = require('../../who-is-circle/open-data/index.js');
   OD.handleMessage({ type: 'showLeaderboard', key: 'circle', width: 700, height: 1180, scale: 2,
+    canvasW: 402, canvasH: 874, designScale: 402 / 750, rectX: 25, rectY: 210,
     rankNames: RN2, style: {} }, fake);
   await new Promise((r) => setTimeout(r, 40));
   const tf = fake.ctx._tf;
@@ -383,19 +388,23 @@ section('九、跨域尺寸契约（主域 ↔ 开放域）');
   //    除一次等于把卡片压扁（真机实测：卡片只有 77% 宽）。
   const G = require('../../who-is-circle/game.js');
   const rect = { x: 25, y: 210, w: 700, h: 1180 };
-  // 位图 = 700×1180 设计px × 2（密度对上了）
-  const pr = G.computePasteRect({ width: 1400, height: 2360 }, rect);
-  ok(pr.w === 700, '贴图宽度 = 700 设计px（不缩不放）', String(pr.w));
-  ok(pr.h === 1180, '贴图高度按位图宽高比 = 1180', String(pr.h));
-  ok(pr.x === 25 && pr.y === 210, '贴图位置 = 内容矩形左上角', pr.x + ',' + pr.y);
+  // 共享画布 = 屏幕大小（逻辑px）→ 贴满整屏，1:1 物理像素（清晰、不变形）
+  const pr = G.computePasteRect({ width: 402, height: 874 }, rect);
+  ok(pr.w <= 750 && pr.h <= 1624, '贴图不超出屏幕（铺满或 letterbox）', pr.w + '×' + pr.h);
+  ok(Math.abs(pr.w / pr.h - 402 / 874) < 0.0001, '**贴图比例 = 位图比例**（不会被拉伸）',
+    (pr.w / pr.h).toFixed(4) + ' vs ' + (402 / 874).toFixed(4));
+  ok(Math.abs(pr.x - (750 - pr.w) / 2) < 0.01, '水平居中', String(pr.x));
+  ok(Math.abs(pr.y - (1624 - pr.h) / 2) < 0.01, '垂直居中', String(pr.y));
 
-  // 位图比例不一样时：等比缩进矩形，不能变形
-  const pr2 = G.computePasteRect({ width: 700, height: 1180 }, rect);
-  ok(pr2.w === 700 && pr2.h === 1180, '1:1 的位图 → 原尺寸贴', pr2.w + '×' + pr2.h);
-  const pr3 = G.computePasteRect({ width: 700, height: 350 }, rect);
-  ok(Math.abs(pr3.w / pr3.h - 2) < 0.01, '扁位图 → 等比缩（不变形）', pr3.w + '×' + pr3.h);
-  const pr4 = G.computePasteRect({ width: 700, height: 5000 }, rect);
-  ok(pr4.h <= 1180 && pr4.w <= 700, '高位图 → 缩进矩形内', pr4.w + '×' + pr4.h);
+  // 位图比例 = 设计网格比例 → 正好整屏
+  const pr2 = G.computePasteRect({ width: 750, height: 1624 }, rect);
+  ok(pr2.w === 750 && pr2.h === 1624 && pr2.x === 0 && pr2.y === 0,
+    '同比例位图 → 整屏 1:1', pr2.w + '×' + pr2.h);
+  // 比例不一致时：等比缩进屏幕，不能变形
+  const pr3 = G.computePasteRect({ width: 750, height: 350 }, rect);
+  ok(Math.abs(pr3.w / pr3.h - 750 / 350) < 0.0001, '扁位图 → 等比缩（不变形）', pr3.w + '×' + pr3.h);
+  const pr4 = G.computePasteRect({ width: 750, height: 5000 }, rect);
+  ok(pr4.h <= 1624 && pr4.w <= 750, '高位图 → 缩进屏幕内', pr4.w + '×' + pr4.h);
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
