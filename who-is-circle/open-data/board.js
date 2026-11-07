@@ -94,13 +94,36 @@
     subSize: 24,
     ruleY: 252,          // 标题下的分隔线
     rowTop: 290,         // 行区顶部
-    rowH: 108,           // 行高
+    rowH: 108,           // 行高（**上限**；实际按页面高度自适应，见 pageLayout）
     badgeX: 66,          // 名次徽章圆心
     avatarX: 136,        // 头像圆心
     nameX: 186,          // 昵称 / 段位名左边距
     scoreX: 710,         // 分数右对齐
-    bottomY: 1400        // 底部「我的成绩」那行
+    bottomGap: 90,       // 「我的成绩」那行 + 分隔线
+    buttonGap: 140       // 底部「返回」按钮预留（主域画，榜面要给它留位）
   };
+
+  /**
+   * 整屏页的布局（按**实际页面高度**算，不写死）。
+   *
+   * 为什么不能写死：榜面页的高度 = 屏幕比例换算出来的设计px，
+   * 16:9 的手机（iPhone SE / 老安卓）只有 **1334** 设计px，
+   * 而 10 行 × 108 + 标题 + 底部要 1450+ ⇒ **最后几行会被切掉**。
+   *
+   * 所以行高按可用高度自适应（108 是上限，不够就压缩），
+   * 底部还要给主域画的「返回」按钮留位（按钮不是榜面的一部分）。
+   */
+  function pageLayout(pageH) {
+    var avail = pageH - PAGE.rowTop - PAGE.bottomGap - PAGE.buttonGap;
+    var rowH = Math.max(72, Math.min(PAGE.rowH, Math.floor(avail / MAX_ROWS)));
+    var rowsBottom = PAGE.rowTop + MAX_ROWS * rowH;
+    return {
+      rowTop: PAGE.rowTop,
+      rowH: rowH,
+      rowsBottom: rowsBottom,
+      bottomY: rowsBottom + 30          // 「我的成绩」那行的基线
+    };
+  }
   var SELF_NAME = '我';    // 开放域拿不到自己的昵称 —— 我们知道那是我，就画「我」
 
   // ---- 托管数据解析 ----
@@ -404,15 +427,21 @@
     // 整屏页：高度 = 屏幕的设计高度（开放域给的 pageH）
     // 卡片：高度跟着行数走（1 个人的榜不该是张空卡）
     var plan = rowPlan(list, o);
-    var rowH = isPage ? PAGE.rowH : plan.rowH;
-    var maxRows = isPage ? Math.max(1, Math.floor((PAGE.bottomY - PAGE.rowTop) / rowH))
-                         : plan.maxRows;
+    var pageH = (typeof o.pageH === 'number' && o.pageH > 0) ? o.pageH : 1624;
+    var pl = isPage ? pageLayout(pageH) : null;
+    var rowH = isPage ? pl.rowH : plan.rowH;
+    var maxRows = isPage ? MAX_ROWS : plan.maxRows;
     var shown = Math.min(list.length, maxRows);
-    var H = isPage ? ((typeof o.pageH === 'number' && o.pageH > 0) ? o.pageH : 1624)
+    var H = isPage ? pageH
                    : ((typeof o.boardH === 'number' && o.boardH > 0) ? o.boardH : plan.H);
 
     // ---- 布局参数（两套布局共用同一套绘制代码）----
-    var L = isPage ? PAGE : {
+    var L = isPage ? {
+      pad: PAGE.pad, titleY: PAGE.titleY, titleSize: PAGE.titleSize,
+      subSize: PAGE.subSize, ruleY: PAGE.ruleY,
+      rowTop: pl.rowTop, rowH: pl.rowH, badgeX: PAGE.badgeX, avatarX: PAGE.avatarX,
+      nameX: PAGE.nameX, scoreX: PAGE.scoreX, bottomY: pl.bottomY
+    } : {
       pad: PAD, titleY: TITLE_H / 2, titleSize: 34, subSize: 24, ruleY: TITLE_H - 1,
       rowTop: ROW_TOP, rowH: rowH, badgeX: BADGE_X, avatarX: AVATAR_X,
       nameX: NAME_X, scoreX: SCORE_X, bottomY: H - BOTTOM_H / 2
@@ -611,6 +640,7 @@
     drawBoard: drawBoard,
     rowPlan: rowPlan,
     boardHeight: boardHeight,
+    pageLayout: pageLayout,
     DEFAULT_STYLE: DEFAULT_STYLE,
     MAX_ROWS: MAX_ROWS
   };

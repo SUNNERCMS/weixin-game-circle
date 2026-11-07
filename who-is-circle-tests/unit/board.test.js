@@ -307,5 +307,46 @@ section('七、drawBoard —— 画榜');
   ok(!threw, 'ctx 为 null 或尺寸为 0 → 不抛异常');
 }
 
+section('十、整屏页的跨机型自适应');
+
+{
+  // 榜面页的高度 = 屏幕比例换算出来的设计px，不同机型不一样：
+  //   19.5:9 / 20:9（主流）→ 1610~1670 设计px
+  //   16:9（iPhone SE / 老安卓）→ **只有 1334**
+  // 行高如果写死 108，16:9 机器上 10 行 + 底部那行要 1450+ ⇒ **最后几行被切掉**。
+  const pl19 = Board.pageLayout(1631);
+  const pl16 = Board.pageLayout(1334);
+  const plTab = Board.pageLayout(1024);   // 平板：页面更矮
+
+  ok(pl19.rowH === 108, '主流比例（1631）→ 行高保持 108', String(pl19.rowH));
+  ok(pl16.rowH < 108 && pl16.rowH >= 72,
+    '16:9（1334）→ 行高自动压缩，不切掉最后几行', String(pl16.rowH));
+  // 预留：底部那行 90 + 返回按钮区 140（board.js 的 PAGE.bottomGap / buttonGap）
+  ok(pl16.rowTop + 10 * pl16.rowH + 90 + 140 <= 1334,
+    '16:9 下 10 行 + 底部 + 按钮区仍放得下',
+    String(pl16.rowTop + 10 * pl16.rowH) + ' + 230 ≤ 1334');
+  ok(plTab.rowH >= 72, '更矮的页面 → 行高不低于下限 72（不会挤成一团）', String(plTab.rowH));
+
+  // 底部那行必须落在页面内
+  ok(pl16.bottomY < 1334, '16:9 下底部那行仍在页面内', String(pl16.bottomY));
+  ok(pl19.bottomY < 1631, '主流比例下底部那行在页面内', String(pl19.bottomY));
+
+  // 实际绘制验证：16:9 的页面上，第 10 行与底部那行都要被画出来
+  const ctx2 = makeCtx();
+  const rows = [];
+  for (let i = 0; i < 12; i++) {
+    rows.push({ openid: 'o_' + i, nickname: '玩家' + i, score: 90 - i, level: 8,
+                verdict: 'ok', isSelf: false, rank: i + 1 });
+  }
+  Board.drawBoard(ctx2, rows, {
+    width: 750, height: 1334, page: true, pageH: 1334, style: {},
+    rankNames: ['灾难现场', '一团面条', '土豆', '饺子', '鸡蛋', '甜甜圈', '饼干', '轮胎', '满月', '圆规', '教科书', '精密仪器', '神之圆']
+  });
+  const ts2 = texts(ctx2);
+  ok(ts2.indexOf('玩家9') >= 0, '16:9 上第 10 行仍然画出来了', String(ts2.length) + ' 段文字');
+  ok(ts2.some(t => t.indexOf('还有 2 位好友在玩') >= 0),
+    '16:9 上「还有 2 位好友在玩」也画出来了');
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
 process.exit(fail ? 1 : 0);

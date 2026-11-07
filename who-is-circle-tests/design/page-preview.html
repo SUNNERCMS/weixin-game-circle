@@ -32,7 +32,7 @@
 
 <div class="row" id="row"></div>
 
-<script src="../../who-is-circle/open-data/board.js?v=6"></script>
+<script src="../../who-is-circle/open-data/board.js?v=7"></script>
 <script>
 (function () {
   'use strict';
@@ -82,7 +82,8 @@
   function drawPage(canvas, rows, extra) {
     extra = extra || {};
     var dpr = 2;
-    var pageH = Math.round(LOGICAL_H / DS);      // 屏幕的设计高度
+    // 页面高度 = 屏幕比例换算出来的设计px（不同机型不一样）
+    var pageH = extra.pageH || Math.round(LOGICAL_H / DS);
     canvas.width = DESIGN_W * dpr;
     canvas.height = pageH * dpr;
     canvas.style.width = (DESIGN_W * PX) + 'px';
@@ -126,7 +127,10 @@
     { title: '3 人（短榜）', rows: mkRows(3, { self: { score: 94.8, level: 11 } }) },
     { title: '只有 1 人', rows: mkRows(1) },
     { title: '空榜', rows: [], extra: { emptyText: '还没有好友在玩' } },
-    { title: '我未上榜', rows: mkRows(4), extra: { selfScore: 77.7 } }
+    { title: '我未上榜', rows: mkRows(4), extra: { selfScore: 77.7 } },
+    // 16:9 机型（iPhone SE / 老安卓）：页面只有 1334 设计px —— 行高必须自动压缩
+    { title: '16:9 机型（页面 1334）', rows: mkRows(9, { self: { score: 79.2, level: 8 } }),
+      extra: { pageH: 1334 } }
   ];
 
   var row = document.getElementById('row');

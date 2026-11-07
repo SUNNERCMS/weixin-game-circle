@@ -131,7 +131,8 @@
     cardLine: 'rgba(44,44,42,0.10)',
     fitCircle: '#B4B2A9',  // 结算标准圆虚线
     cardWhite: '#FFFFFF',
-    btnSecondary: '#F1EDE4'
+    btnSecondary: '#F1EDE4',
+    inkBg: '#F7F5F0'          // 纸底（与榜面同色，铺底才无缝）
   };
 
   /* ============================================================
@@ -1545,14 +1546,25 @@
     c.globalAlpha = alpha;
     c.translate(dx, 0);
     var L = CFG.RANK_PANEL;
-    // 榜面 = **整屏页**（开放数据域画满一屏）。
-    // 共享画布就是屏幕（真机实测 402×874 逻辑px = 屏幕逻辑尺寸），
-    // 所以按 1:1 贴整屏：既清晰又不变形，也不用"遮罩 + 浮空卡片"那套弹窗语言。
+    // 榜面 = **整屏页**（开放数据域画满一屏），主域按 1:1 贴进来。
+    //
+    // ⚠️ 先铺一层纸底：榜面的高度 = 屏幕比例换算出来的设计px，
+    // 16:9 的手机（375×667）只有 1334 设计px，比设计网格（1624）矮 →
+    // 不铺底的话，榜面下方的区域会露出下层页面（首页）✗
+    c.fillStyle = COL.inkBg;
+    c.fillRect(0, 0, CFG.DESIGN_W, CFG.DESIGN_H);
+    var pr = computePasteRect(getOdCanvas() || { width: 0, height: 0 });
     if (!drawSharedCanvas(c)) {
       drawRankFallback(c, L);
     }
     // 底部返回（主域画：触摸在这边处理）
-    drawButton(c, L.backBtn, '返回', pressedRatio('rankBack'), false);
+    // 位置跟着榜面底部走，并**避开底部手势条**（iPhone 的 home indicator）
+    // —— 固定 y 会在 16:9 机器上飘在半空、在全面屏手机上被手势条压住。
+    var safeB = env.safeBottom || 0;
+    var btnY = Math.min(pr.y + pr.h - 75, CFG.DESIGN_H - safeB - 48);
+    if (btnY < L.backBtn.y - 140) btnY = L.backBtn.y - 140;
+    drawButton(c, { x: L.backBtn.x, y: btnY, w: L.backBtn.w, h: L.backBtn.h },
+               '返回', pressedRatio('rankBack'), false);
     // 开发期诊断浮层：把贴图的关键数字画在屏幕上。
     // 为什么画在屏幕上而不是只打日志：开放数据域的日志在真机调试里要切
     // 「Contexts」才能看到，流程麻烦；画在屏幕上**截图就能看**。
