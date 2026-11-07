@@ -97,6 +97,9 @@
       // ⚠️ 不是设备像素比 —— 共享画布是物理像素的，密度必须跟主域的缩放一致，
       // 否则内容会被放大/裁切（真机上踩过：文字放大三倍、卡片右边被切掉）
       scale: (typeof o.scale === 'number' && o.scale > 0) ? o.scale : DEFAULT_SCALE,
+      // 最近一局的云端结论（榜面用来说明「本地最高分为什么没上榜」）
+      lastVerdict: (typeof o.lastVerdict === 'string') ? o.lastVerdict : '',
+      lastReason: (typeof o.lastReason === 'string') ? o.lastReason : '',
       // 共享画布只能是屏幕大小（逻辑px）—— 平台不接受别的尺寸。
       // 真机实测：请求 700×scale，平台给的是屏幕逻辑尺寸。
       canvasW: (typeof o.canvasW === 'number' && o.canvasW > 0) ? o.canvasW : DEFAULT_CANVAS_W,

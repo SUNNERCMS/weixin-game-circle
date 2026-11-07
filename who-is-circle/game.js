@@ -865,6 +865,8 @@
     pressedBtn: null,        // {id, t0}（按住中）
     btnRelease: null,        // {id, t0}（松手回弹动画中）
     rankPending: false,      // 好友榜：等玩家在设置页开完「向朋友公开」再回来
+    lastVerdict: '',         // 最近一局的云端结论（榜面用来说明「为什么没上榜」）
+    lastReason: '',
     result: null             // 结算数据（直接画在画布上，无浮层）
   };
 
@@ -968,6 +970,9 @@
       // 要让内容在屏幕上和主域一样大，共享画布的密度就得等于主域的 view.scale；
       // 传 dpr 会让内容被放大/裁切（真机上出现过文字被放大三倍、卡片被切掉右边）。
       scale: view.scale,
+      // 最近一局的云端结论：榜面用它说清「本地最高分为什么没上榜」
+      lastVerdict: state.lastVerdict || '',
+      lastReason: state.lastReason || '',
       // 共享画布**只能是屏幕大小**（逻辑px）—— 平台不接受别的尺寸。
       // 真机实测（2026-11-07）：请求 1126×1897，平台给的是 402×874
       // （= 屏幕逻辑尺寸 1206×2622 ÷ dpr 3）。所以按屏幕尺寸画、主域 1:1 贴。
@@ -1145,7 +1150,14 @@
     // 开发版（DEV）：云端结论只作提示，不改本地行为 —— 与本地 judge 的开发豁免同一个道理
     //   （服务端没有开发豁免，开发者自己的合成笔迹会被云端判成 shadow，不豁免就没法调试）
     if (res.isNew && cloud && cloud.enabled) {
-      res.cloudPending = !DEV && (r.score >= GUARD_CFG.HIGH_SCORE);
+      // ⭐ **所有分数都等云端结论**，不只是 ≥95 的。
+      // 原因（真机现象 2026-11-07）：本地最高 76.3，但好友榜显示「本地最高 76.3（未上榜）」，
+      // 而榜上第一名才 67.1 —— 两个数字打架。
+      // 因为低分走异步路径：不等云端就把 76.3 存进本地存档了；云端后来判无效
+      // （限流 reject / 行为异常 shadow）时，`state.bestPending` 早就 null 了，
+      // **那个分数没人回收** ⇒ 本地永远存着一个云端不认的分数。
+      // 等云端结论后：无效的局根本不会进本地存档，两个数字天然一致。
+      res.cloudPending = !DEV;
       // 最佳分的落定也要等云端 —— 结算页被关掉了也不能让本地最佳分比榜上虚高
       if (state.bestPending) state.bestPending.cloudPending = res.cloudPending;
       cloud.submitIfRecord({
@@ -1169,6 +1181,9 @@
   //   本地最佳分照常更新、徽章照常弹，只是不上榜、不弹错误提示
   function onCloudSettled(res, final) {
     if (!res || !final) return;
+    // 记下云端结论 —— 榜面底部那行用它说明「为什么本地最高分没上榜」
+    state.lastVerdict = final.verdict || final.status || '';
+    state.lastReason = final.reason || '';
     if (final.status === 'ok') {
       var cs = final.cloudScore;
       if (typeof cs === 'number' && Math.abs(cs - res.score) > 0.001) {

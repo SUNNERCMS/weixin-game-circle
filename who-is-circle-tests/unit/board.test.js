@@ -267,7 +267,7 @@ section('七、drawBoard —— 画榜');
   Board.drawBoard(ctx, [{ openid: 'o_1', nickname: '小明', score: 90, level: 8, verdict: 'ok', isSelf: false, rank: 1 }],
     { width: 700, height: 1180, style: {}, rankNames: RANK_NAMES, selfScore: 77.7 });
   const ts = texts(ctx);
-  ok(ts.some(t => t.indexOf('本地最高 77.7（未上榜）') >= 0), '底部写「本地最高 X（未上榜）」', ts.join(' | ').slice(0, 120));
+  ok(ts.some(t => t.indexOf('本地最高 77.7') >= 0), '底部写「本地最高 X（未上榜）」', ts.join(' | ').slice(0, 120));
   ok(!ts.some(t => t.indexOf('我的历史最高') >= 0), '**不冒充榜上的分**（不写「我的历史最高」）');
 }
 {
@@ -346,6 +346,38 @@ section('十、整屏页的跨机型自适应');
   ok(ts2.indexOf('玩家9') >= 0, '16:9 上第 10 行仍然画出来了', String(ts2.length) + ' 段文字');
   ok(ts2.some(t => t.indexOf('还有 2 位好友在玩') >= 0),
     '16:9 上「还有 2 位好友在玩」也画出来了');
+}
+
+section('十一、不在榜上时，底部那行要说清原因');
+
+{
+  // 真机现象（2026-11-07）：本地最高 76.3，榜上第一名才 67.1，
+  // 底部却只写「本地最高 76.3（未上榜）」—— 看不出所以然，像功能坏了。
+  // 现在按主域传来的云端结论说明原因。
+  function drawBottom(opts) {
+    const ctx = makeCtx();
+    const rows = [{ openid: 'o_1', nickname: '小明', score: 90, level: 8,
+                   verdict: 'ok', isSelf: false, rank: 1 }];
+    Board.drawBoard(ctx, rows, {
+      width: 750, height: 1624, page: true, pageH: 1624, style: {},
+      rankNames: RANK_NAMES, selfScore: 76.3,
+      lastVerdict: opts.lastVerdict, lastReason: opts.lastReason
+    });
+    return texts(ctx).filter(t => t.indexOf('本地最高') >= 0)[0] || '(没画)';
+  }
+
+  ok(drawBottom({}).indexOf('暂未上榜') >= 0, '没有结论 → 「暂未上榜」',
+    drawBottom({}));
+  ok(drawBottom({ lastVerdict: 'shadow' }).indexOf('成绩未获认可') >= 0,
+    '云端判行为异常 → 「成绩未获认可」', drawBottom({ lastVerdict: 'shadow' }));
+  ok(drawBottom({ lastVerdict: 'reject', lastReason: '提交过于频繁，请稍后再试' })
+       .indexOf('提交过于频繁') >= 0,
+    '云端限流拒绝 → 说明原因（只取第一个分句）',
+    drawBottom({ lastVerdict: 'reject', lastReason: '提交过于频繁，请稍后再试' }));
+  ok(drawBottom({ lastVerdict: 'unavailable' }).indexOf('云端未达') >= 0,
+    '云端不可达 → 「云端未达，暂未上榜」', drawBottom({ lastVerdict: 'unavailable' }));
+  ok(drawBottom({ lastVerdict: 'reject', lastReason: '' }).indexOf('成绩未获认可') >= 0,
+    '有结论但没原因 → 退到通用说法');
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);

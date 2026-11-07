@@ -353,6 +353,25 @@
   }
 
   /**
+   * 不在榜上时，说明「本地最高分为什么没上榜」。
+   *
+   * 主域把最近一局的云端结论带过来（lastVerdict / lastReason，设计文档 §6.4）。
+   * 没有结论就说「暂未上榜」—— 不编原因。
+   */
+  function offBoardReason(ctx, o) {
+    var v = o.lastVerdict || '';
+    var r = String(o.lastReason || '').trim();
+    if (v === 'shadow') return '成绩未获认可';
+    if (v === 'reject') {
+      // 云端的 reason 形如「提交过于频繁，请稍后再试」→ 只取第一个分句
+      var head = r.split(/[，,;；]/)[0];
+      return head ? truncateText(ctx, head, 200) : '成绩未获认可';
+    }
+    if (v === 'unavailable' || v === 'off') return '云端未达，暂未上榜';
+    return '暂未上榜';
+  }
+
+  /**
    * 名次徽章：前三名实心圆徽章（暖橙，沿用主按钮的色），其余弱化成数字。
    * 只换数字颜色不够 —— 前三名要有个能被一眼扫到的形状。
    */
@@ -598,8 +617,10 @@
     var left;
     if (selfRow) {
       left = '我的历史最高 ' + selfRow.score.toFixed(1) + ' · 第 ' + selfRow.rank + ' 名';
-    } else if (typeof o.selfScore === 'number' && isFinite(o.selfScore)) {
-      left = '本地最高 ' + o.selfScore.toFixed(1) + '（未上榜）';
+    } else if (typeof o.selfScore === 'number' && isFinite(o.selfScore) && o.selfScore > 0) {
+      // 不在榜上但有本地最高分 → **说清楚为什么**，别让人以为功能坏了
+      // （真机现象：本地 76.3 却显示「未上榜」，而榜上第一名才 67.1 —— 看不出所以然）
+      left = '本地最高 ' + o.selfScore.toFixed(1) + ' · ' + offBoardReason(ctx, o);
     } else {
       left = '你还没有上榜';
     }
