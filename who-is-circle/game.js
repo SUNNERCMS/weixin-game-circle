@@ -957,6 +957,11 @@
       showToast('好友榜要在微信里看哦');
       return Promise.resolve({ status: 'unavailable' });
     }
+    // 关系链数据的授权 scope —— **名字必须是这个**（官方 SCOPE 列表里只有它）。
+    // 写成 scope.friendCloudStorage 会**静默失效**：authorize 必然失败 →
+    // 玩家被引导去设置页 → 而设置页里根本没有「向朋友公开」这一项
+    // （因为从没成功请求过）→ 死循环，玩家永远开不了。
+    var FRIEND_SCOPE = 'scope.WxFriendInteraction';
     return new Promise(function (resolve) {
       var settled = false;
       function done(status) {
@@ -981,7 +986,7 @@
         if (typeof w.authorize !== 'function') { guideToSetting(); return; }
         try {
           w.authorize({
-            scope: 'scope.friendCloudStorage',
+            scope: FRIEND_SCOPE,
             success: function () { goRank(); },
             fail: function () { guideToSetting(); }
           });
@@ -991,7 +996,7 @@
         if (typeof w.getSetting !== 'function') { guideToSetting(); return; }
         w.getSetting({
           success: function (res) {
-            var auth = (res && res.authSetting) ? res.authSetting['scope.friendCloudStorage'] : undefined;
+            var auth = (res && res.authSetting) ? res.authSetting[FRIEND_SCOPE] : undefined;
             var st = LeaderboardBridge.classifyPrivacy(auth);
             if (st === 'granted') goRank();
             else if (st === 'denied') guideToSetting();

@@ -51,7 +51,7 @@
 | 共享画布 `sharedCanvas` 在页面切换 / `onShow` 后内容会丢 | 主域要能随时重新合成，开放域要能随时重画 |
 | 开放数据域**不能加载主域图片资源** | 好友头像得自己 `wx.createImage()` 拉 URL + 失败兜底 |
 | 托管数据只认**已上报过的用户** | 没完成过一次上报的好友不在榜上 |
-| 托管数据读取受 `scope.friendCloudStorage` 门禁 | 未开「向朋友公开」静默读不到 |
+| 托管数据读取受 `scope.WxFriendInteraction` 门禁 | 未开「向朋友公开」静默读不到 |
 | `wxgame.score` 必须是 **Int32** | 分数一位小数 → 上报 ×10，显示 ÷10 |
 | 后台排行榜 key **≤8 字符且全英文** | 用 `circle` |
 
@@ -433,19 +433,31 @@ who-is-circle-tests/
 
 ### 8.3 隐私门禁引导
 
-`scope.friendCloudStorage` 是**隐私设置**而非普通授权，处理用三态策略：
+关系链数据受 `scope.WxFriendInteraction` 门禁（**是否授权使用你的微信朋友信息**），
+是**隐私设置**而非普通授权，处理用三态策略：
 
 ```js
+var FRIEND_SCOPE = 'scope.WxFriendInteraction';   // ← 官方 SCOPE 列表里只有它
 wx.getSetting({
   success(res) {
-    var s = res.authSetting['scope.friendCloudStorage'];
+    var s = res.authSetting[FRIEND_SCOPE];
     if (s === true)  → 直接拉数据
     if (s === false) → 玩家曾拒绝，只能 wx.openSetting() 引导去设置页手动打开
-    if (s === undefined) → 先试 wx.authorize({scope:'scope.friendCloudStorage'})，
+    if (s === undefined) → 先试 wx.authorize({scope: FRIEND_SCOPE})，
                           失败则回落 wx.openSetting()
   }
 });
 ```
+
+> ⚠️ **scope 名不能写错，否则功能静默失效**（P4 真机验证时踩过）：
+> 写成了 `scope.friendCloudStorage`（**官方列表里没有这个 scope**）→
+> `wx.authorize` 必然失败 → 玩家被引导去设置页 →
+> **而设置页里根本没有「向朋友公开」这一项**（从没成功请求过，微信就没列出来）→
+> 玩家永远开不了，界面上只显示一句「请在设置里开启向朋友公开」。
+>
+> 这类「名字写错」行为单测发现不了（mock 用什么 key 都行），
+> 所以 `who-is-circle-tests/unit/leaderboard.test.js` 里有一条**读源码**的守卫断言：
+> 代码里必须出现 `scope.WxFriendInteraction`，且不得出现 `scope.friendCloudStorage`。
 
 未授权时面板显示：「开启「向朋友公开」，好友才能看到你的成绩」+ 一个引导按钮。
 

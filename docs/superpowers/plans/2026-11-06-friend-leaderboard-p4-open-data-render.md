@@ -408,7 +408,7 @@ resendShowOnShow()     // wx.onShow 时若在 'rank' 页 → 补发一次 showLe
   - `rankPanelLayout()` 的几何与本计划「榜面几何」表一致（内容矩形 `(25,210,700,1180)`、关闭按钮热区 ≥88×88、底部按钮不与内容矩形重叠）
   - `openLeaderboard` 在**已授权**时：切到 `state.page === 'rank'`，且向开放域发了 `showLeaderboard` 消息
   - `openLeaderboard` 在**未授权（denied）**时：不切页，弹出引导，并调用 `wx.openSetting`
-  - `openLeaderboard` 在**未决定（unset）**时：先调 `wx.authorize({scope:'scope.friendCloudStorage'})`；授权成功 → 切页；失败 → 调 `wx.openSetting`
+  - `openLeaderboard` 在**未决定（unset）**时：先调 `wx.authorize({scope:'scope.WxFriendInteraction'})`；授权成功 → 切页；失败 → 调 `wx.openSetting`
   - 任何 wx 调用抛异常 → 不崩，`state.page` 不变
   - 非微信环境（`hasWx === false`）→ `openLeaderboard()` 不切页（浏览器端没有好友榜），且不抛
   - `resendShowOnShow()`：在 `'rank'` 页 → 再发一次 `showLeaderboard`；不在 → 不发
@@ -440,10 +440,10 @@ resendShowOnShow()     // wx.onShow 时若在 'rank' 页 → 补发一次 showLe
 
   - `openLeaderboard()` 的门禁流程（Q2）：
     ```
-    wx.getSetting() → authSetting['scope.friendCloudStorage']
+    wx.getSetting() → authSetting['scope.WxFriendInteraction']
       granted → 进页 + postMessage(showLeaderboard)
       denied  → toast「已关闭向朋友公开」+ wx.openSetting()
-      unset   → wx.authorize({scope:'scope.friendCloudStorage'})
+      unset   → wx.authorize({scope:'scope.WxFriendInteraction'})
                    success → 进页 + postMessage
                    fail    → wx.openSetting()
     ```

@@ -152,7 +152,9 @@ function fakeWxApi(opts) {
   rec.api = {
     getSetting: function (o) {
       if (opts.getSettingThrows) throw new Error('boom');
-      o.success({ authSetting: { 'scope.friendCloudStorage': opts.auth } });
+      // key 用**真实的 scope 名** —— mock 用假名字的话，
+      // 真实代码里 scope 名写错单测也发现不了（这条另有一个读源码的守卫）
+      o.success({ authSetting: { 'scope.WxFriendInteraction': opts.auth } });
     },
     authorize: function (o) {
       rec.authorize++;
@@ -271,6 +273,32 @@ function resetState() {
     ok(sent === false, '不在榜面页 → 不补发', String(sent));
     ok(rec.messages.length === 0, '没有消息发出');
   }
+section('九、scope 名守卫（写错了功能静默失效，单测发现不了）');
+
+{
+  // 这一条是**读源码**的断言，不是行为断言 ——
+  // scope 名拼错时，行为单测全绿（mock 用什么 key 都行），但真机上：
+  //   wx.authorize 必然失败 → 玩家被引导去设置页
+  //   → 而设置页里根本没有「向朋友公开」这一项（从没成功请求过）
+  //   → 玩家永远开不了，界面只显示一句「请在设置里开启向朋友公开」
+  // 这类"名字写错"只能靠读源码守住。
+  const fs = require('fs');
+  const path2 = require('path');
+  const rawSrc = fs.readFileSync(
+    path2.join(__dirname, '../../who-is-circle/game.js'), 'utf8');
+  // 剥离注释后再查 —— 注释里会**故意**写出错误的名字当反面教材，
+  // 那是给人看的，不该把自己搞红。
+  const gameSrc = rawSrc.replace(/\/\*[\s\S]*?\*\//g, ' ')
+                       .replace(/(^|[^:'"\\])\/\/[^\n]*/g, '$1');
+
+  ok(gameSrc.indexOf("'scope.WxFriendInteraction'") >= 0,
+    'game.js 用的是官方 scope 名 scope.WxFriendInteraction');
+  ok(gameSrc.indexOf('scope.friendCloudStorage') < 0,
+    '**代码里没有** scope.friendCloudStorage（这个 scope 在官方列表里不存在）');
+  ok(gameSrc.indexOf('authSetting[') >= 0 && gameSrc.indexOf('[FRIEND_SCOPE]') >= 0,
+    'getSetting 读的是同一个 scope 常量（别一个地方改了一个地方没改）');
+}
+
 })().then(function () {
   console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
   process.exit(fail ? 1 : 0);
