@@ -35,7 +35,7 @@
   // 为什么放在主域：开放域是独立沙盒，改样式要改一处（D9）。
   var STYLE_TEMPLATE = {
     rowH: 96,
-    avatarR: 32,
+    avatarR: 26,
     showAvatar: true,
     nameSize: 28,
     scoreSize: 34,
@@ -44,7 +44,10 @@
     colorDim: '#8C8A82',
     colorSelf: '#B4643C',
     colorPanel: '#F7F5F0',
-    colorLine: '#E3E0D8'
+    colorLine: '#E3E0D8',
+    colorBadge: '#D95F28',   // 前三名名次徽章（沿用主按钮的橙）
+    colorSelfBg: '#F6E7DA',  // 自己的那行淡底
+    colorPillBg: '#EDE9E0'   // 段位名胶囊底
   };
 
   /**

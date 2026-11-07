@@ -203,9 +203,19 @@
     if (!width || !height) return;       // 还没收到消息 → 画布先空着
 
     var dpr = (typeof msg.pixelRatio === 'number' && msg.pixelRatio > 0) ? msg.pixelRatio : getDpr(w);
+    // 画布尺寸必须在画之前定好 —— 改 canvas.width/height 会把画布清空。
+    // 而卡高要跟着行数走（1 个人的榜不该是张空卡），所以先问 board 要高度。
+    var boardH = height;
+    try {
+      if (Board && typeof Board.boardHeight === 'function') {
+        boardH = Board.boardHeight(st.rows || [], {
+          width: width, height: height, style: msg.style
+        });
+      }
+    } catch (e) { /* 算不出来就用传进来的高度 */ }
     try {
       canvas.width = Math.round(width * dpr);
-      canvas.height = Math.round(height * dpr);
+      canvas.height = Math.round(boardH * dpr);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     } catch (e) { /* 画布不可写就到此为止 */ }
 

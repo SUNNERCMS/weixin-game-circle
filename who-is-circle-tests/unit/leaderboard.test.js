@@ -27,7 +27,7 @@ section('一、buildStyleParams —— 样式单一来源在主域');
   const s = LB.buildStyleParams();
   // 设计文档 §6.4 钉死的值，逐项断言 —— 主域改了这里，开放域的默认就得跟着变
   ok(s.rowH === 96, 'rowH = 96', 'rowH=' + s.rowH);
-  ok(s.avatarR === 32, 'avatarR = 32', 'avatarR=' + s.avatarR);
+  ok(s.avatarR === 26, 'avatarR = 26', 'avatarR=' + s.avatarR);
   ok(s.showAvatar === true, 'showAvatar = true');
   ok(s.nameSize === 28, 'nameSize = 28', 'nameSize=' + s.nameSize);
   ok(s.scoreSize === 34, 'scoreSize = 34', 'scoreSize=' + s.scoreSize);
@@ -37,7 +37,11 @@ section('一、buildStyleParams —— 样式单一来源在主域');
   ok(s.colorSelf === '#B4643C', 'colorSelf = #B4643C', s.colorSelf);
   ok(s.colorPanel === '#F7F5F0', 'colorPanel = #F7F5F0', s.colorPanel);
   ok(s.colorLine === '#E3E0D8', 'colorLine = #E3E0D8', s.colorLine);
-  ok(Object.keys(s).length === 11, '样式项不多不少（设计文档 §6.4 的 11 项）', Object.keys(s).length + ' 项');
+  ok(s.colorBadge === '#D95F28', 'colorBadge = #D95F28（前三名徽章，沿用主按钮的橙）', s.colorBadge);
+  ok(s.colorSelfBg === '#F6E7DA', 'colorSelfBg = #F6E7DA（自己的那行淡底）', s.colorSelfBg);
+  ok(s.colorPillBg === '#EDE9E0', 'colorPillBg = #EDE9E0（段位名胶囊底）', s.colorPillBg);
+  ok(s.avatarR === 26, 'avatarR = 26（圆头像在 96 行高里刚好）', String(s.avatarR));
+  ok(Object.keys(s).length === 14, '样式项不多不少（设计文档 §6.4 的 14 项）', Object.keys(s).length + ' 项');
 }
 {
   // 每次调用返回新对象 —— 免得主域改了返回值污染后面的消息

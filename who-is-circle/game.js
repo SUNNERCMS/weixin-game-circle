@@ -1483,14 +1483,18 @@
     c.globalAlpha = alpha;
     c.translate(dx, 0);
     var L = CFG.RANK_PANEL;
-    // 遮罩
-    c.fillStyle = 'rgba(44,44,42,0.55)';
+    // 遮罩：上深下浅。
+    // 死黑 55% 会把暖白纸底压成脏灰；渐变让卡片像"浮在暗幕上"而不是"贴在暗幕上"。
+    var grad = c.createLinearGradient(0, 0, 0, CFG.DESIGN_H);
+    grad.addColorStop(0, 'rgba(38,36,32,0.78)');
+    grad.addColorStop(1, 'rgba(38,36,32,0.52)');
+    c.fillStyle = grad;
     c.fillRect(L.mask.x, L.mask.y, L.mask.w, L.mask.h);
-    // 标题
-    fillText(c, '好友排行', L.title.x, L.title.y, 'bold 44px sans-serif', '#FFFFFF');
-    // 榜面内容
+    // 榜面内容（标题也在卡里 —— 开放数据域画的，卡才自洽）
     if (!drawSharedCanvas(c, L.content)) {
-      drawOdFallback(c, L.content, '好友榜还没准备好', '（开放数据域未连通）');
+      // 兜底：开放数据域没连上 → 标题由主域补上，别让用户对着空白发呆
+      fillText(c, '好友排行', L.title.x, L.title.y, 'bold 44px sans-serif', '#FFFFFF');
+      drawOdFallback(c, L.content, '还没准备好', '（开放数据域未连通）');
     }
     // 底部返回
     drawButton(c, L.backBtn, '返回', pressedRatio('rankBack'), false);

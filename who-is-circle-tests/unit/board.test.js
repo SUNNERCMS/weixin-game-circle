@@ -30,6 +30,11 @@ function makeCtx() {
     textAlign: '', textBaseline: '',
     setTransform() {}, save() {}, restore() {}, translate() {}, scale() {},
     beginPath() {}, closePath() {}, fill() {}, stroke() {}, arc() {}, drawImage() {},
+    // 真 canvas 有的路径与渐变 API（假 ctx 少了它们，绘制代码一用就 TypeError）
+    moveTo() {}, lineTo() {}, arcTo() {}, quadraticCurveTo() {}, rect() {}, clip() {},
+    createLinearGradient() { return { addColorStop() {} }; },
+    createRadialGradient() { return { addColorStop() {} }; },
+    setLineDash() {}, shadowBlur: 0, shadowColor: '', shadowOffsetX: 0, shadowOffsetY: 0,
     fillRect(x, y, w, h) { calls.push({ op: 'fillRect', x: x, y: y, w: w, h: h, fillStyle: this.fillStyle }); },
     fillText(t, x, y) { calls.push({ op: 'fillText', t: String(t), x: x, y: y, fillStyle: this.fillStyle, font: this.font }); },
     measureText(t) {

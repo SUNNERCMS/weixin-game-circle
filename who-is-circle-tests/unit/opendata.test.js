@@ -133,6 +133,11 @@ function makeCtx() {
     textAlign: '', textBaseline: '',
     setTransform() {}, save() {}, restore() {}, translate() {}, scale() {},
     beginPath() {}, closePath() {}, fill() {}, stroke() {}, arc() {}, drawImage() {},
+    // 真 canvas 有的路径与渐变 API（榜面绘制会用到；少了就 TypeError）
+    moveTo() {}, lineTo() {}, arcTo() {}, quadraticCurveTo() {}, rect() {}, clip() {},
+    createLinearGradient() { return { addColorStop() {} }; },
+    createRadialGradient() { return { addColorStop() {} }; },
+    setLineDash() {}, shadowBlur: 0, shadowColor: '', shadowOffsetX: 0, shadowOffsetY: 0,
     fillRect(x, y, w, h) { calls.push({ op: 'fillRect', x: x, y: y, w: w, h: h }); },
     fillText(t, x, y) { calls.push({ op: 'fillText', t: String(t), x: x, y: y }); },
     measureText(t) { return { width: String(t == null ? '' : t).length * 14 }; }
@@ -254,8 +259,9 @@ function makeFakeWx(opts) {
     ok(fake.calls.friend > before, 'showLeaderboard → 触发了一次拉取',
       'friend ' + before + ' → ' + fake.calls.friend);
     ok(fake.ctx.calls.length > 0, 'sharedCanvas 上画了东西（不是空白）', 'calls=' + fake.ctx.calls.length);
-    ok(fake.canvas.width === 1400 && fake.canvas.height === 2360,
-      '画布按 设计px × pixelRatio 建', fake.canvas.width + '×' + fake.canvas.height);
+    // 画布高度**跟着行数走**（卡高自适应）：标题 104 + 3 行×96 + 底部 88 = 480，再 ×dpr2
+    ok(fake.canvas.width === 1400 && fake.canvas.height === 960,
+      '画布按 设计px × pixelRatio 建，且高度跟着行数走', fake.canvas.width + '×' + fake.canvas.height);
   }
   {
     const before = fake.calls.friend;
