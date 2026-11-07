@@ -79,24 +79,66 @@
    * showLeaderboard → 记下参数 → 画「加载中」→ 拉数据 → 画榜
    * hideLeaderboard → 停止（不再拉、不再画）
    */
+  // ---- 关系链数据的缓存 ----
+  //
+  // 真机现象（2026-11-07）：第一次打开好友榜能读到数据，**返回后再打开就提示
+  // 「暂时读不到好友数据」** —— 第二次 wx.getFriendCloudStorage 调用失败了
+  // （关系链接口有调用频率/配额限制）。
+  //
+  // 所以：缓存最近一次成功的结果。
+  //   · TTL 内再打开 → 直接用缓存，**不重复调接口**（省配额，也就不会再失败）
+  //   · 拉取失败但有缓存 → **回退到缓存**（有旧数据总比"读不到"好）
+  //
+  // 缓存 20 秒：足够覆盖"返回→再打开"，又短到不会让自己的分数显得过时。
+  var cache = { rows: [], at: 0, selfScore: null };
+  var CACHE_TTL = 20000;
+
   function handleMessage(msg) {
     if (!msg || typeof msg !== 'object') return;
     if (msg.type === 'showLeaderboard') {
       state.msg = msg;
-      state.rows = [];
       state.error = '';
+      var now = Date.now();
+      var selfScore = (typeof msg.selfScore === 'number') ? msg.selfScore : null;
+      // 缓存失效的两个条件：
+      //   ① 超过 TTL（好友数据会变，比如对方刚破纪录）
+      //   ② **自己的分数变了**（刚打完一局 → 必须显示新分，不能拿缓存里的旧分）
+      var cacheFresh = cache.rows.length &&
+        now - cache.at < CACHE_TTL &&
+        cache.selfScore === selfScore;
+      if (cacheFresh) {
+        // 缓存还新鲜 → 直接用，**不重复调关系链接口**（它有调用频率限制）
+        state.rows = cache.rows;
+        state.loading = false;
+        renderNow();
+        return;
+      }
+      state.rows = [];
       state.loading = true;
-      state.avatars = {};
+      // 头像不清：avatarUrl 是稳定的，复用已加载的图，省一次网络请求
       renderNow();
       pull(getWx(), msg.key || 'circle').then(function (res) {
-        state.rows = res.rows || [];
-        state.error = res.error || '';
+        var rows = res.rows || [];
+        var err = res.error || '';
+        if (err && cache.rows.length) {
+          // 拉取失败但有缓存 → 回退到缓存（比"读不到"好得多）
+          odLog('拉取失败，回退到缓存：' + err);
+          rows = cache.rows;
+          err = '';
+        }
+        state.rows = rows;
+        state.error = err;
         state.loading = false;
+        if (!err && rows.length) {
+          cache.rows = rows;
+          cache.at = now;
+          cache.selfScore = selfScore;
+        }
         renderNow();
         loadAvatars(getWx(), state.rows);
       }, function () {
-        state.rows = [];
-        state.error = '读不到好友数据';
+        state.rows = cache.rows || [];
+        state.error = state.rows.length ? '' : '读不到好友数据';
         state.loading = false;
         renderNow();
       });
@@ -105,6 +147,7 @@
       state.rows = [];
       state.error = '';
       state.loading = false;
+      // ⚠️ **缓存不清** —— 关榜不该让下次打开读不到数据
     }
   }
 
@@ -124,7 +167,10 @@
         w.getFriendCloudStorage({
           keyList: [k],
           success: function (res) { resolve((res && res.data) || []); },
-          fail: function () { resolve(null); }        // null = 失败（与「空列表」区分开）
+          fail: function (e) {                          // null = 失败（与「空列表」区分开）
+            odLog('getFriendCloudStorage 失败：' + ((e && e.errMsg) || '未知'));
+            resolve(null);
+          }
         });
       } catch (e) { resolve(null); }
     });
@@ -135,7 +181,10 @@
         w.getUserCloudStorage({
           keyList: [k],
           success: function (res) { resolve((res && res.data) || []); },
-          fail: function () { resolve(null); }
+          fail: function (e) {
+            odLog('getUserCloudStorage 失败：' + ((e && e.errMsg) || '未知'));
+            resolve(null);
+          }
         });
       } catch (e) { resolve(null); }
     });
