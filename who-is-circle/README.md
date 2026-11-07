@@ -178,6 +178,20 @@ game.js        主域：wx.getOpenDataContext().canvas → ctx.drawImage(sharedC
 > 纯逻辑能拆出来、能单测，全靠这一条。越界 require（`../`）会让整个开放数据域
 > 加载失败、榜面一片空白，是最难查的一类故障，所以有守卫测试盯着。
 
+## 审计记录的清理（与隐私声明对齐）
+
+`submissions`（每次提交的审计记录）**只保留 30 天** —— 隐私保护指引里就是这么声明的，
+不删就是骗用户。清理由独立的云函数 `cleanup` 干，配**定时触发器**（每天凌晨 3 点）。
+
+```
+cloudfunctions/cleanup/
+├── core.js        ← 纯逻辑（过期判定 / 切批 / 计划），Node 可单测
+├── index.js       ← 云函数入口（分批删，每批 100 条，单次最多 20 批）
+└── README.md      ← 部署 + 触发器配置 + 行为要点
+```
+
+部署与触发器配置见 `cloudfunctions/cleanup/README.md`（**`--remote-npm-install` 不能省**）。
+
 ## 云端算分（好友榜的权威分）
 
 榜上的分**不是客户端算的**，是云函数 `score` 算的。客户端那份只作交叉校验参考

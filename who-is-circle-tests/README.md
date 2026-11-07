@@ -42,7 +42,7 @@ npm test
 - 覆盖：圆度锚点表与扣分明细恒等式、采样密度无关性、闭合/方向因子、
   无效判定（直线 / 太小 / 太短 / 一小段弧 / 乱涂）、13 档段位与升级提示、
   防作弊命中与不误伤真人、重放检测、存档往返一致性与改分检测。
-- `npm test` 会依次跑 5 个文件（scorer / shared / opendata / cloudcore / cloudfn），
+- `npm test` 会依次跑 10 个文件（scorer / shared / opendata / board / leaderboard / cloudcore / cleanup / cloudfn / cloudclient / gamesettle），
   任何一段失败即中断并返回非 0。
 
 ## 2. 端到端像素验收
