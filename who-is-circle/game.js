@@ -1421,16 +1421,8 @@
     if (odLogState !== 1) {
       odLogState = 1;
     }
-    // 共享画布是**物理像素**的，而这里的矩形是**设计坐标**（ctx 上有 view.scale 的缩放）。
-    // 所以贴图尺寸（设计px）= 位图物理尺寸 / view.scale。
-    //
-    // ⚠️ **不要把位图缩放到位图尺寸里** —— 位图比目标小就会被放大 = 糊。
-    // 真机实测过（2026-11-07）：内容发虚、卡片只有 77% 宽。
-    // 现在按 1:1 物理像素贴：位图多大就画多大（清晰），再居中放进内容矩形。
-    var w = sc.width / view.scale;
-    var h = sc.height / view.scale;
-    if (w > rect.w) { h = h * rect.w / w; w = rect.w; }   // 比内容矩形宽 → 等比缩进去（不变形）
-    if (h > rect.h) { w = w * rect.h / h; h = rect.h; }
+    var pr = computePasteRect(sc, rect);
+    var w = pr.w, h = pr.h;
     if (odLogState === 1) {
       odLogState = 2;
       // 这几个数对不上 → 内容会被放大/裁切/错位（真机上踩过），所以记一笔
@@ -1438,15 +1430,35 @@
             Math.round(w) + '×' + Math.round(h) + '，view.scale=' + view.scale.toFixed(3) +
             '（画布=' + env.width + '×' + env.height + '）');
     }
-    var x = rect.x + (rect.w - w) / 2;
-    var y = rect.y + (rect.h - h) / 2;
     try {
-      c.drawImage(sc, x, y, w, h);
+      c.drawImage(sc, pr.x, pr.y, pr.w, pr.h);
       return true;
     } catch (e) {
       // 贴不上就当没有这一块 —— 开放数据域是可选能力，不能因此影响主玩法
       return false;
     }
+  }
+
+  /**
+   * 算共享画布在主域里的贴图矩形（纯函数，好单测）。
+   *
+   * ⚠️ **不要在这里除 view.scale** —— sc.width 与 rect.w 本来就是同一个量纲
+   * （都是设计坐标那一侧的数字），除一次等于把卡片压扁。
+   * 真机实测过（2026-11-07）：卡片只有 77% 宽、内容发虚。
+   *
+   * 位图的**密度**由开放数据域负责对齐（它按主域给的 scale 画），
+   * 主域只管「等比贴进矩形」—— 密度对上了就是 1:1，既不糊也不变形。
+   */
+  function computePasteRect(sc, rect) {
+    var ar = (sc && sc.height > 0) ? (sc.width / sc.height) : 1;
+    var w = rect.w, h = rect.w / ar;
+    if (h > rect.h) { h = rect.h; w = rect.h * ar; }
+    return {
+      x: rect.x + (rect.w - w) / 2,
+      y: rect.y + (rect.h - h) / 2,
+      w: w,
+      h: h
+    };
   }
 
   function renderHome(c, alpha, dx) {
@@ -1912,6 +1924,7 @@
       closeLeaderboard: closeLeaderboard,
       resendShowOnShow: resendShowOnShow,
       rankPanelLayout: rankPanelLayout,
+      computePasteRect: computePasteRect,
       // 结算链路（P3）的集成测试钩子：state 是运行时状态，onCloudSettled 是云端结论落地的入口
       state: state, onCloudSettled: onCloudSettled,
       RANKS: RANKS, SCORE_CFG: SCORE_CFG, GUARD_CFG: GUARD_CFG, CFG: CFG

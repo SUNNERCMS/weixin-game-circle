@@ -226,8 +226,13 @@
       canvas.height = wantH;
       realW = canvas.width;
       realH = canvas.height;
+      // 只按**宽度**补偿：卡片必须铺满位图宽度，否则主域按位图整体贴进来时，
+      // 卡片就只占位图的一部分 → 屏幕上卡片缩水（真机实测过：只有 77% 宽）。
+      // 高度不够就裁掉一点（宁可裁底，也不能让卡片缩窄）。
       if (realW > 0 && wantW > 0 && realW !== wantW) k = realW / wantW;
-      if (realH > 0 && wantH > 0 && realH !== wantH) k = Math.min(k, realH / wantH);
+      // ⚠️ setTransform(a,b,c,d,e,f) 里 **e 是 X 平移、f 才是 Y 平移**。
+      //    之前把垂直居中的偏移塞进了 e → 整张卡片右移出屏幕，
+      //    真机表现为「屏幕上只剩一条窄边」（2026-11-07 踩过）。
       ctx.setTransform(dpr * k, 0, 0, dpr * k, 0, 0);
       // 显式清空：画布背景默认是白底，不清的话卡片四周会有一圈白
       try { ctx.clearRect(0, 0, realW, realH); } catch (e2) { /* ignore */ }
@@ -246,11 +251,12 @@
         });
       }
     } catch (e) { /* 算不出来就用传过来的高度 */ }
+    // 卡片在固定画布里垂直居中。
+    // ⚠️ setTransform 的平移量是**设备像素**（不是设计像素），所以这里不要再乘 dpr*k。
+    //    卡片在设备像素里的高度 = boardH（设计px）× dpr × k。
     var offsetY = 0;
     try {
-      if (Board && typeof Board.boardHeight === 'function' && realH > 0) {
-        offsetY = Math.max(0, Math.round((realH / (dpr * k) - boardH) / 2));
-      }
+      offsetY = Math.max(0, Math.round((realH - boardH * dpr * k) / 2));
     } catch (e) { /* ignore */ }
 
     // board.js 没加载上（require 失败）→ 画一句人话，别留一片空白
@@ -277,8 +283,10 @@
       emptyText: '还没有好友在玩'
     };
 
-    // 卡片在固定画布里垂直居中（offsetY 是开放域算好的）
-    try { ctx.setTransform(dpr * k, 0, 0, dpr * k, offsetY * dpr * k, 0); } catch (e3) { /* ignore */ }
+    // 卡片在固定画布里垂直居中。
+    // ⚠️ setTransform(a,b,c,d,e,f)：**e = X 平移，f = Y 平移**。
+    //    Y 偏移必须放在 f 位 —— 放错位置整张卡片会横着跑出屏幕。
+    try { ctx.setTransform(dpr * k, 0, 0, dpr * k, 0, offsetY); } catch (e3) { /* ignore */ }
 
     if (st.error) {
       opts.emptyText = '暂时读不到好友数据';   // 不空白

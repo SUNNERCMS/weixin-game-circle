@@ -131,7 +131,12 @@ function makeCtx() {
     calls: calls,
     font: '28px sans-serif', fillStyle: '', strokeStyle: '', globalAlpha: 1, lineWidth: 1,
     textAlign: '', textBaseline: '',
-    setTransform() {}, save() {}, restore() {}, translate() {}, scale() {},
+    // 记录 setTransform —— 要能断言「卡片没被平移出屏幕」
+    // （setTransform 的 e 是 X 平移、f 才是 Y 平移，位置搞错过一次，
+    //   真机表现为屏幕上只剩一条窄边）
+    _tf: null,
+    setTransform(a, b, c, d, e, f) { this._tf = { a: a, b: b, c: c, d: d, e: e, f: f }; },
+    save() {}, restore() {}, translate() {}, scale() {},
     beginPath() {}, closePath() {}, fill() {}, stroke() {}, arc() {}, drawImage() {},
     // 真 canvas 有的路径与渐变 API（榜面绘制会用到；少了就 TypeError）
     moveTo() {}, lineTo() {}, arcTo() {}, quadraticCurveTo() {}, rect() {}, clip() {},
@@ -344,6 +349,53 @@ function makeFakeWx(opts) {
   ok(fake.canvas.width === w1 && fake.canvas.height === h1,
     '数据到了之后画布尺寸不变', w1 + '×' + h1 + ' → ' + fake.canvas.width + '×' + fake.canvas.height);
   ok(w1 === 1400 && h1 === 2360, '画布固定 = 700×1180 设计px × scale', w1 + '×' + h1);
+}
+
+section('九、跨域尺寸契约（主域 ↔ 开放域）');
+
+{
+  // ① 开放域：**不许有 X 平移**。
+  //    setTransform(a,b,c,d,e,f) 里 e 是 X 平移、f 才是 Y 平移。
+  //    之前把「垂直居中」的偏移塞进了 e → 整张卡片右移出屏幕，
+  //    真机表现为「屏幕上只剩一条窄边」，本地完全测不出来（浏览器端没有开放数据域）。
+  const RN2 = ['灾难现场', '一团面条', '土豆', '饺子', '鸡蛋', '甜甜圈', '饼干',
+    '轮胎', '满月', '圆规', '教科书', '精密仪器', '神之圆'];
+  const fake = makeFakeWx({
+    friends: [friendEntry('o_1', '小明', 97.8, 11)],
+    self: [{ KVDataList: [{ key: 'circle', value: hosting(88, 9) }] }]
+  });
+  global.wx = fake;
+  delete require.cache[require.resolve('../../who-is-circle/open-data/index.js')];
+  const OD = require('../../who-is-circle/open-data/index.js');
+  OD.handleMessage({ type: 'showLeaderboard', key: 'circle', width: 700, height: 1180, scale: 2,
+    rankNames: RN2, style: {} }, fake);
+  await new Promise((r) => setTimeout(r, 40));
+  const tf = fake.ctx._tf;
+  ok(!!tf, '开放域设置过 transform');
+  ok(tf && tf.e === 0, '**没有 X 平移**（卡片不会被推出屏幕）', tf ? ('e=' + tf.e) : '(无)');
+  ok(tf && tf.f >= 0 && tf.f < fake.canvas.height,
+    'Y 偏移在画布内（垂直居中没跑飞）', tf ? ('f=' + tf.f + ' / 画布高 ' + fake.canvas.height) : '(无)');
+}
+
+{
+  // ② 主域：贴图宽度必须等于内容矩形的宽（700 设计px）。
+  //    ⚠️ 不要除 view.scale —— sc.width 与 rect.w 是同一个量纲，
+  //    除一次等于把卡片压扁（真机实测：卡片只有 77% 宽）。
+  const G = require('../../who-is-circle/game.js');
+  const rect = { x: 25, y: 210, w: 700, h: 1180 };
+  // 位图 = 700×1180 设计px × 2（密度对上了）
+  const pr = G.computePasteRect({ width: 1400, height: 2360 }, rect);
+  ok(pr.w === 700, '贴图宽度 = 700 设计px（不缩不放）', String(pr.w));
+  ok(pr.h === 1180, '贴图高度按位图宽高比 = 1180', String(pr.h));
+  ok(pr.x === 25 && pr.y === 210, '贴图位置 = 内容矩形左上角', pr.x + ',' + pr.y);
+
+  // 位图比例不一样时：等比缩进矩形，不能变形
+  const pr2 = G.computePasteRect({ width: 700, height: 1180 }, rect);
+  ok(pr2.w === 700 && pr2.h === 1180, '1:1 的位图 → 原尺寸贴', pr2.w + '×' + pr2.h);
+  const pr3 = G.computePasteRect({ width: 700, height: 350 }, rect);
+  ok(Math.abs(pr3.w / pr3.h - 2) < 0.01, '扁位图 → 等比缩（不变形）', pr3.w + '×' + pr3.h);
+  const pr4 = G.computePasteRect({ width: 700, height: 5000 }, rect);
+  ok(pr4.h <= 1180 && pr4.w <= 700, '高位图 → 缩进矩形内', pr4.w + '×' + pr4.h);
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
