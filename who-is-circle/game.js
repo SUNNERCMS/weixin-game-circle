@@ -100,6 +100,8 @@
     // 开发期诊断浮层：把共享画布的关键数字画在屏幕上（排查分辨率时用）
     // 查完已关掉；要再查就改成 true。
     DEBUG_OVERLAY: false,
+    // 榜面页底部的诊断行（云端链路状态）—— 没有真机调试时靠截图定位
+    RANK_DEBUG: true,
     // P1：开放数据域占位内容在首页的贴图矩形（左上角 + 尺寸，设计px）
     // P4 起首页这块位置改成「好友排行」入口按钮（见 RANK_BTN）
     OD_PLACEHOLDER: { x: 125, y: 800, w: 500, h: 96 },
@@ -867,6 +869,7 @@
     rankPending: false,      // 好友榜：等玩家在设置页开完「向朋友公开」再回来
     lastVerdict: '',         // 最近一局的云端结论（榜面用来说明「为什么没上榜」）
     lastReason: '',
+    cloudDiag: '',           // 云端链路的诊断（画在榜面上，截图就能看）
     result: null             // 结算数据（直接画在画布上，无浮层）
   };
 
@@ -1200,6 +1203,11 @@
     // 记下云端结论 —— 榜面底部那行用它说明「为什么本地最高分没上榜」
     state.lastVerdict = final.verdict || final.status || '';
     state.lastReason = final.reason || '';
+    // 托管数据写成功没有？（写失败 ⇒ 榜上永远没有你）
+    if (final.status === 'ok') {
+      state.cloudDiag = '托管' + (final.hosted ? '✓' : '✗') +
+                        (typeof final.hostedScore === 'number' ? ' ' + final.hostedScore : '');
+    }
     if (final.status === 'ok') {
       var cs = final.cloudScore;
       if (typeof cs === 'number' && Math.abs(cs - res.score) > 0.001) {
@@ -1588,6 +1596,15 @@
     var pr = computePasteRect(getOdCanvas() || { width: 0, height: 0 });
     if (!drawSharedCanvas(c)) {
       drawRankFallback(c, L);
+    }
+    // 开发期诊断行：云端链路的最后一手（托管写入 / 对账）——
+    // 没有真机调试时日志看不到，但截图能看。
+    if (CFG.RANK_DEBUG && state.cloudDiag) {
+      c.fillStyle = COL.grayText;
+      c.font = '20px monospace';
+      c.textAlign = 'left';
+      c.textBaseline = 'middle';
+      c.fillText('[cloud] ' + state.cloudDiag, 16, CFG.DESIGN_H - 18);
     }
     // 底部返回（主域画：触摸在这边处理）
     // 位置跟着榜面底部走，并**避开底部手势条**（iPhone 的 home indicator）
@@ -2005,7 +2022,11 @@
     // 不等 flushPending：那个可能要跑几十秒（限速），对账要尽快做完。
     try {
       var syncP = cloud.syncBest();
-      if (syncP && typeof syncP.catch === 'function') syncP.catch(function () { /* ignore */ });
+      if (syncP && typeof syncP.then === 'function') {
+        syncP.then(function (best) {
+          state.cloudDiag += ' 对账' + (best ? '✓' + best : '无');
+        }, function () { /* ignore */ });
+      }
     } catch (e) { /* ignore */ }
   }
 

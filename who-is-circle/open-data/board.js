@@ -630,6 +630,15 @@
     ctx.textBaseline = 'middle';
     ctx.fillText(truncateText(ctx, left, W * 0.56), L.pad, by + BOTTOM_H / 2);
 
+    // 诊断行（开发期用）：没有真机调试时，截图就能看出「为什么没认出我」
+    if (o.debugLine) {
+      ctx.fillStyle = st.colorDim;
+      ctx.font = '20px monospace';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(o.debugLine, L.pad, by + BOTTOM_H / 2 + 30);
+    }
+
     // 放不下时说明还剩多少人
     if (list.length > maxRows) {
       ctx.fillStyle = st.colorDim;

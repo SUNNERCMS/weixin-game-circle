@@ -44,7 +44,8 @@
     rows: [],         // 拉到的行（已排序、已带名次）
     error: '',        // 拉取失败的原因（空 = 没失败）
     loading: false,   // 正在拉
-    avatars: {}       // openid → 已加载的头像图片
+    avatars: {},      // openid → 已加载的头像图片
+    diag: ''          // 开发期诊断信息（画在榜面上，截图就能看）
   };
 
   function getWx() {
@@ -247,6 +248,12 @@
       }
       odLog('好友 ' + rows.length + ' 行（自己' + (selfInFriends ? '在列表里' : '不在列表里') +
             '），自读 ' + ((selfData && selfData.length) ? selfData.length + ' 行' : '空'));
+      // 诊断信息**画在榜面上**（不是只进日志）——
+      // 没有真机调试时日志看不到，但截图能看（2026-11-07 的教训：每次都靠日志才能定案太慢）。
+      state.diag = '自读' + ((selfData && selfData.length) ? selfData.length : 0) +
+                   ' 好友' + rows.length +
+                   ' 我在' + (selfInFriends ? '是' : '否') +
+                   ' id' + (myOpenid ? '有' : '无');
       var selfRow = null;
       var sList = selfData || [];
       for (var j = 0; j < sList.length; j++) {
@@ -392,6 +399,7 @@
       rankNames: msg.rankNames || [],
       avatarImages: state.avatars,
       selfScore: msg.selfScore,
+      debugLine: state.diag || '',   // 开发期诊断行（截图就能看）
       emptyText: '还没有好友在玩'
     };
 
