@@ -53,6 +53,25 @@ async function handle(event, ctx, db, opts) {
     return result('reject', null, '未登录', null, null);
   }
 
+  // ---- sync 模式：只回答「云端权威最高分是多少」----
+  //
+  // 为什么需要它（2026-11-07 审计）：云端账本（scores）是权威，托管数据是它的公开副本，
+  // 而托管数据**是客户端写的** —— 写失败就没有重试（见 js/cloud.js 的修复）。
+  // 于是会出现「云端有分、榜上没有」的永久不一致。
+  //
+  // 这个模式让客户端**随时能对账**：拿云端的 best 补写托管数据。
+  // 幂等、免费（不判定、不写 submissions、不计速率）。
+  if (event && event.action === 'sync') {
+    var m = await db.getScore(OPENID);
+    var b = (m && typeof m.score === 'number') ? m.score : 0;
+    return {
+      ok: true, sync: true, verdict: 'ok',
+      score: b, best: b, level: levelIndex(b),
+      reason: '', newBest: false, replay: false, dryRun: !!dryRun,
+      bestVerdict: (m && typeof m.bestVerdict === 'string') ? m.bestVerdict : 'ok'
+    };
+  }
+
   var ev = event || {};
 
   // ---- 2. 解码笔迹 ----
@@ -202,6 +221,9 @@ function buildScoreRow(mine, verdict, score, nowSec, recentSubmits) {
   var best = (mine && typeof mine.score === 'number') ? mine.score : 0;
   var newBest = valid && score > best;
   var nextBest = newBest ? score : best;
+  // 当前最佳分那一局的结论（sync 模式要返回它 —— 免得把「未完全验证」标成「已验证」）
+  var nextVerdict = newBest ? verdict
+    : ((mine && typeof mine.bestVerdict === 'string') ? mine.bestVerdict : 'ok');
   var row = {
     score: nextBest,
     // 段位跟着最高分走；成绩无效时沿用原值（set 是覆盖语义，不带回去会被清空）
@@ -211,6 +233,7 @@ function buildScoreRow(mine, verdict, score, nowSec, recentSubmits) {
     updatedAt: valid ? nowSec
                       : ((mine && typeof mine.updatedAt === 'number') ? mine.updatedAt : 0),
     lastSubmitAt: nowSec,
+    bestVerdict: nextVerdict,
     recentSubmits: recentSubmits.concat([nowSec])
   };
   return { row: row, valid: valid, newBest: newBest, nextBest: nextBest };

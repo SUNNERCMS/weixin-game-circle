@@ -36,6 +36,12 @@
   var DEFAULT_MAX_PENDING = 5;        // pending 队列上限，超出丢最旧
   var DEFAULT_TIMEOUT_MS = 5000;      // 云调用超时：超了按「服务不可达」降级
   var PENDING_KEY = 'lb_pending';     // pending 队列的本地存储 key
+  var HOSTING_KEY = 'lb_hosting';     // 本地记「托管数据写到多少分」—— 对账要用
+  // 补传限速：云端 60 秒 5 次（core.js 的 RATE_WINDOW_SEC / RATE_MAX）。
+  // 补传是顺序连发 ⇒ 不限速的话第 6 条起就会被限流拒绝，
+  // 而「被限流」的那一条不会重新入队 ⇒ 队列丢项。
+  // 14 秒一条 ⇒ 5 条落在 56 秒内（≤ 5 次/60 秒）⇒ 不会自伤。
+  var FLUSH_GAP_MS = 14000;
 
   /* ===== 纯函数：托管数据格式 ===== */
 
@@ -72,6 +78,15 @@
     if (e.errMsg) return e.errMsg;
     if (e.message) return e.message;
     return String(e);
+  }
+
+  function wait(ms) {
+    return new Promise(function (resolve) {
+      try {
+        if (typeof setTimeout === 'function') setTimeout(resolve, ms);
+        else resolve();
+      } catch (e) { resolve(); }
+    });
   }
 
   // 给 promise 加超时。超时后 reject，调用方按「服务不可达」降级。
@@ -151,6 +166,27 @@
       return list.length;
     }
 
+    // ---------- 本地记「托管数据写到多少分」 ----------
+    //
+    // 为什么记：托管数据只能由客户端写（云端没有写它的接口），
+    // 而主域**读不到**自己的托管数据（getUserCloudStorage 只能在开放数据域调），
+    // 所以客户端只能靠自己记 —— 否则「云端有分、托管没有」这种情况无法发现、无法修复。
+    function rememberHosting(score, level, verdict) {
+      try {
+        storage.set(HOSTING_KEY, JSON.stringify({
+          score: score, level: level, verdict: verdict || 'ok', at: now()
+        }));
+      } catch (e) { /* 记不住也不影响主流程 */ }
+    }
+    function recallHosting() {
+      try {
+        var s = storage.get(HOSTING_KEY);
+        if (!s) return null;
+        var o = JSON.parse(s);
+        return (o && typeof o.score === 'number') ? o : null;
+      } catch (e) { return null; }
+    }
+
     // ---------- 托管数据 ----------
 
     // 写托管数据。失败不抛 —— 云端已经确认过分了，托管数据写失败只是「暂时没上榜」。
@@ -161,6 +197,9 @@
       return Promise.resolve(setUserCloudStorage(payload)).then(function () {
         log('[cloud] 托管数据写入成功 key=' + key + ' score=' + score +
             (verdict === 'unverified' ? '（未完全验证）' : ''));
+        // 记住写到多少分 —— 对账时用来判断「托管数据落后没有」。
+        // 放在这里而不是调用方：**任何**写入路径都会记（正常上报 / 补传 / 对账补写）。
+        rememberHosting(score, level, verdict);
         return true;
       }, function (e) {
         log('[cloud] 托管数据写入失败 key=' + key + ' err=' + msg(e));
@@ -200,11 +239,20 @@
         return { status: 'unavailable', score: payload.score, reason: '云端无响应' };
       }
       var v = res.verdict;
+      // 云端权威 best 一路带回来（三个分支都要）——
+      // 客户端要靠它把本地分对齐到云端的口径（设计文档 §7.4）。
+      var cbest = (typeof res.best === 'number') ? res.best : null;
       if (v === 'reject') {
-        return { status: 'reject', score: payload.score, reason: res.reason || '云端判定无效' };
+        return {
+          status: 'reject', score: payload.score, verdict: 'reject',
+          reason: res.reason || '云端判定无效', best: cbest
+        };
       }
       if (v === 'shadow') {
-        return { status: 'shadow', score: payload.score, reason: res.reason || '云端判定行为异常' };
+        return {
+          status: 'shadow', score: payload.score, verdict: 'shadow',
+          reason: res.reason || '云端判定行为异常', best: cbest
+        };
       }
       if (v !== 'ok' && v !== 'unverified') {
         return { status: 'unavailable', score: payload.score, reason: '未知 verdict：' + String(v) };
@@ -226,7 +274,7 @@
           level: lv,
           best: bs,
           verdict: v,
-          hosted: hosted
+          hosted: hosted        // ← false = 托管数据没写进去（要重试）
         };
       });
     }
@@ -281,9 +329,24 @@
       }
 
       var settled = function (final) {
-        // 服务不可达 → 把这一局存进 pending 队列，下次启动补传
-        // （只有确定结论 ok/shadow/reject 才算「传完了」，那种不用重试）
+        // ---- 这一局要不要补传？----
+        // ① 服务不可达 → 补传（云端没结论）
+        // ② **托管数据写失败** → 补传（云端已经认了这个分，但公开副本没写进去；
+        //    不补传就出现「云端账本有分、榜上永远没有」，而且永远不会自愈）★缺陷 1
+        // ③ **被限流拒绝** → 补传（这一局本来有效，不该因为限流白打）★缺陷 2
+        //
+        // 注意 ②③：云端已经给出确定结论（ok / reject），按老逻辑「传完了、不用重试」——
+        // 但那两条路径真正缺的是**托管数据**，不是云端结论，所以要重传一次。
+        var needRetry = false;
+        var why = '';
         if (final.status === 'unavailable') {
+          needRetry = true; why = '云端不可达';
+        } else if (final.status === 'ok' && final.hosted === false) {
+          needRetry = true; why = '托管数据写入失败';
+        } else if (final.status === 'reject' && /频繁|rate/i.test(String(final.reason || ''))) {
+          needRetry = true; why = '被限流拒绝';
+        }
+        if (needRetry) {
           enqueuePending({
             score: payload.score,
             level: (typeof payload.level === 'number') ? payload.level : 0,
@@ -293,6 +356,7 @@
             clientBest: (typeof payload.clientBest === 'number') ? payload.clientBest : null,
             ts: now()
           });
+          log('[cloud] 需要补传：' + why);
         }
         if (typeof payload.onSettled === 'function') {
           try { payload.onSettled(final); } catch (e) { /* 回调出错不影响上报本身 */ }
@@ -338,6 +402,12 @@
             return flushed;
           }
           flushed++;
+          // 限速：云端 60 秒 5 次。顺序连发不限速的话，第 6 条起会被限流拒绝，
+          // 而「被限流」按新逻辑会重新入队 —— 于是队列反复打转、还互相踩。
+          // 14 秒一条 ⇒ 5 条落在 56 秒内（≤5 次/60 秒）⇒ 不会自伤。
+          if (i + 1 < list.length) {
+            return wait(FLUSH_GAP_MS).then(function () { return step(i + 1); });
+          }
           return step(i + 1);
         });
       }
@@ -348,11 +418,55 @@
       return loadPending().length;
     }
 
+    /**
+     * 对账：问云端「我的权威最高分是多少」，若托管数据落后就补写。
+     *
+     * 为什么需要（2026-11-07 审计）：
+     *   云端账本（scores）是权威，托管数据是它的**公开副本**，而副本是**客户端写的**。
+     *   主域**读不到**自己的托管数据（getUserCloudStorage 只能在开放数据域调），
+     *   所以客户端只能靠自己记（HOSTING_KEY）——
+     *   否则「云端有分、榜上没有」这件事既发现不了也修不了。
+     *
+     * 幂等：写进去的是云端权威 max，永远不会把托管数据写低 ✓
+     * 免费：sync 模式不判定、不写 submissions、不计速率 ✓
+     */
+    function syncBest() {
+      if (!enabled) return Promise.resolve(null);
+      var p;
+      try {
+        p = Promise.resolve(callFunction('score', { action: 'sync' }));
+      } catch (e) { return Promise.resolve(null); }
+      return p.then(function (r) {
+        var res = (r && typeof r === 'object' && Object.prototype.hasOwnProperty.call(r, 'result'))
+          ? r.result : r;
+        if (!res || res.sync !== true) return null;
+        var best = res.best;
+        if (typeof best !== 'number' || best <= 0) return null;
+        var level = (typeof res.level === 'number') ? res.level : 0;
+        var verdict = res.bestVerdict || 'ok';
+        var local = recallHosting();
+        var localScore = (local && typeof local.score === 'number') ? local.score : -1;
+        if (localScore >= best) {
+          log('[cloud] 对账：本地记的托管分 ' + localScore + ' ≥ 云端 ' + best + ' → 不用补写');
+          return null;
+        }
+        log('[cloud] 对账：云端 best=' + best + '，本地记的托管分=' +
+            (local ? local.score : '无') + ' → 补写托管数据');
+        return reportHosting(best, level, verdict).then(function (ok) {
+          return ok ? best : null;
+        });
+      }, function () {
+        return null;   // 云端不可达：对账失败不影响玩法
+      });
+    }
+
     return {
       submitIfRecord: submitIfRecord,
       flushPending: flushPending,
       pendingCount: pendingCount,
       reportHosting: reportHosting,
+      syncBest: syncBest,
+      recallHosting: recallHosting,
       enabled: enabled,
       key: key,
       highScore: highScore,
@@ -361,7 +475,9 @@
       // 内部件，暴露出来是为了单测能直接断言格式与降级分支
       _buildHostingValue: buildHostingValue,
       _loadPending: loadPending,
-      _savePending: savePending
+      _savePending: savePending,
+      _rememberHosting: rememberHosting,
+      _recallHosting: recallHosting
     };
   }
 

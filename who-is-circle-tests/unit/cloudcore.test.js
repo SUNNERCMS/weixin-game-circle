@@ -317,7 +317,41 @@ function makeEvent(pts, extra) {
     ok(db.scoreRows.get('o_15').score === 0, '→ 不进榜（scores 记 0）', 'score=' + db.scoreRows.get('o_15').score);
   }
 
-  console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
+  console.log('\n========== 九、sync 模式（对账） ==========');
+
+{
+  // 云端账本是权威，托管数据是它的公开副本（副本由客户端写）。
+  // sync 模式让客户端随时能问「我的最高分是多少」⇒ 托管数据落后时补写。
+  // 它必须**便宜且无副作用**：不判定、不写 submissions、不计速率。
+  const calls = { getScore: 0, setScore: 0, addSubmission: 0 };
+  const db = {
+    getScore: async () => { calls.getScore++; return { score: 76.3, level: 7, bestVerdict: 'ok' }; },
+    setScore: async () => { calls.setScore++; },
+    addSubmission: async () => { calls.addSubmission++; },
+    recentSubmissions: async () => []
+  };
+  const out = await core.handle({ action: 'sync' }, { OPENID: 'o_1' }, db);
+  ok(out && out.sync === true, 'sync 模式被识别', JSON.stringify(out && out.ok));
+  ok(out && out.best === 76.3, '返回云端权威最高分', String(out && out.best));
+  ok(out && out.level === 7, '返回对应段位（按 76.3 算出来的那一档）', String(out && out.level));
+  ok(out && out.bestVerdict === 'ok', '返回最佳分那一局的结论', String(out && out.bestVerdict));
+  ok(calls.setScore === 0, '**不写** scores', String(calls.setScore));
+  ok(calls.addSubmission === 0, '**不写** submissions', String(calls.addSubmission));
+}
+
+{
+  // 没有记录 → best = 0（客户端据此判断「没什么可补的」）
+  const db = {
+    getScore: async () => null,
+    setScore: async () => {},
+    addSubmission: async () => {},
+    recentSubmissions: async () => []
+  };
+  const out = await core.handle({ action: 'sync' }, { OPENID: 'o_new' }, db);
+  ok(out && out.best === 0, '没有记录 → best=0', String(out && out.best));
+}
+
+console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
   process.exit(fail ? 1 : 0);
 })().catch(e => {
   console.error('\n💥 测试执行异常：', e);

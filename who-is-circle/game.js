@@ -1980,6 +1980,17 @@
       var flushP = cloud.flushPending();
       if (flushP && typeof flushP.catch === 'function') flushP.catch(function () { /* ignore */ });
     } catch (e) { /* ignore */ }
+    // 对账：问云端「我的权威最高分是多少」，托管数据落后就补写。
+    //
+    // 为什么需要（2026-11-07 审计）：云端账本（scores）是权威，托管数据是它的**公开副本**，
+    // 而副本是**客户端写的** —— 写失败就没有重试 ⇒「云端有分、榜上永远没有」且无法自愈。
+    // 这次对账把副本拉回与账本一致（写的是云端权威 max ⇒ 幂等、不会写低）。
+    //
+    // 不等 flushPending：那个可能要跑几十秒（限速），对账要尽快做完。
+    try {
+      var syncP = cloud.syncBest();
+      if (syncP && typeof syncP.catch === 'function') syncP.catch(function () { /* ignore */ });
+    } catch (e) { /* ignore */ }
   }
 
   var pending = 2;

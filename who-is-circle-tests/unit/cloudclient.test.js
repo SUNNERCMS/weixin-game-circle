@@ -377,7 +377,101 @@ const payloadOf = (score, over = {}) => Object.assign({
     ok(h.logs.join('\n').indexOf('未返回 best') >= 0, '留一行日志提醒云函数该更新了');
   }
 
-  console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
+  console.log('\n========== 八、托管数据写失败 / 被限流 → 必须能补传 ==========');
+
+{
+  // 缺陷 1（2026-11-07 审计）：云端认了这个分，但**托管数据写失败**。
+  // 老逻辑：云端已给确定结论 ok ⇒ 「传完了、不用重试」⇒
+  //   云端账本有分、公开副本没写 ⇒ 榜上永远没有这个分，而且永远不会自愈。
+  const env = makeDeps({ hostFail: true, callResult: { verdict: 'ok', score: 97, best: 97 } });
+  const c = Cloud.createClient(env.deps);
+  await c.submitIfRecord({ score: 97, level: 3, pts: [{ x: 1, y: 2 }], clientBest: 90 });
+  await tick();
+  ok(c.pendingCount() === 1, '托管数据写失败 → 这一局进了补传队列',
+    'pending=' + c.pendingCount());
+}
+
+{
+  // 缺陷 2：被限流拒绝（云端 60 秒 5 次）→ 这一局本来有效，不该白打。
+  const env = makeDeps({
+    callResult: { verdict: 'reject', score: 97, best: 90, reason: '提交过于频繁，请稍后再试' }
+  });
+  const c = Cloud.createClient(env.deps);
+  await c.submitIfRecord({ score: 97, level: 3, pts: [{ x: 1, y: 2 }], clientBest: 90 });
+  await tick();
+  ok(c.pendingCount() === 1, '被限流拒绝 → 这一局进了补传队列',
+    'pending=' + c.pendingCount());
+}
+
+{
+  // 其它 reject（笔迹损坏之类）是**永久失败**，重试也没用 → 不该进队列
+  const env = makeDeps({
+    callResult: { verdict: 'reject', score: 97, best: 90, reason: '笔迹数据损坏' }
+  });
+  const c = Cloud.createClient(env.deps);
+  await c.submitIfRecord({ score: 97, level: 3, pts: [{ x: 1, y: 2 }], clientBest: 90 });
+  await tick();
+  ok(c.pendingCount() === 0, '其它 reject（永久失败）→ 不进队列', 'pending=' + c.pendingCount());
+}
+
+{
+  // 云端判无效（shadow）→ 确定结论，不用补传
+  const env = makeDeps({ callResult: { verdict: 'shadow', score: 99, best: 90 } });
+  const c = Cloud.createClient(env.deps);
+  await c.submitIfRecord({ score: 99, level: 4, pts: [{ x: 1, y: 2 }], clientBest: 90 });
+  await tick();
+  ok(c.pendingCount() === 0, '云端判无效 → 不进队列', 'pending=' + c.pendingCount());
+}
+
+console.log('\n========== 九、对账（syncBest）：托管数据落后就补写 ==========');
+
+{
+  // 云端账本有分、托管数据没写进去 → 对账要把它补上
+  const env = makeDeps({
+    callResult: function (name, data) {
+      if (data && data.action === 'sync') {
+        return Promise.resolve({ result: { ok: true, sync: true, best: 76.3, level: 9, bestVerdict: 'ok' } });
+      }
+      return Promise.resolve({ result: { ok: true, verdict: 'ok' } });
+    }
+  });
+  const c = Cloud.createClient(env.deps);
+  const got = await c.syncBest();
+  ok(got === 76.3, '对账：云端 best=76.3 → 补写托管数据', String(got));
+  ok(env.hosted.length === 1, '托管数据被写了一次', 'writes=' + env.hosted.length);
+  const v = JSON.parse(env.hosted[0].KVDataList[0].value);
+  ok(v.wxgame.score === 763, '写进去的是云端权威分（×10）', String(v.wxgame.score));
+  ok(c.recallHosting() && c.recallHosting().score === 76.3,
+    '本地记住了托管分（下次对账能比较）');
+}
+
+{
+  // 本地记的托管分 ≥ 云端 best → 不用补写（幂等，不做无意义的写入）
+  const env = makeDeps({
+    callResult: function (name, data) {
+      if (data && data.action === 'sync') {
+        return Promise.resolve({ result: { ok: true, sync: true, best: 70, level: 8 } });
+      }
+      return Promise.resolve({ result: { ok: true, verdict: 'ok' } });
+    }
+  });
+  const c = Cloud.createClient(env.deps);
+  await c.reportHosting(80, 10, 'ok');
+  await tick();
+  const got = await c.syncBest();
+  ok(got === null, '对账：云端 best ≤ 本地记的托管分 → 不补写', String(got));
+  ok(env.hosted.length === 1, '没有多余的托管写入', 'writes=' + env.hosted.length);
+}
+
+{
+  // 云端不可达 → 对账失败不影响玩法（返回 null，不抛）
+  const env = makeDeps({ callResult: 'reject' });
+  const c = Cloud.createClient(env.deps);
+  const got = await c.syncBest();
+  ok(got === null, '云端不可达 → 对账安静失败', String(got));
+}
+
+console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
   process.exit(fail ? 1 : 0);
 })().catch(e => {
   console.error('\n💥 用例执行异常：', e);
