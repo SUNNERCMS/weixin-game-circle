@@ -51,6 +51,39 @@
     return (typeof wx !== 'undefined' && wx) ? wx : null;
   }
 
+  // ---- 自己的 openid ----
+  //
+  // 为什么需要（真机现象 2026-11-07）：榜上**能看到自己**（78.3 ✓ 托管数据是对的），
+  // 但底部写「本地最高 78.3（未上榜）」——
+  // 说明开放域**没认出哪一行是自己** ⇒ 那一行没有 isSelf ⇒ 底部只能退回本地分。
+  //
+  // 根因：`wx.getUserCloudStorage`（读自己的托管数据）没返回数据，
+  // 而**平台的好友列表里把自己也列进去了** ⇒ 那行被当成了普通好友。
+  //
+  // 解法：开放数据域里 `wx.getUserInfo` 能拿到自己的 openId ⇒
+  // 好友列表里凡是它，就是我 ⇒ 标上 isSelf ✓
+  // （比现在「按托管数据原文比对」稳得多 —— 原文比对在自读失败时完全失效）
+  var myOpenid = '';
+  function fetchMyOpenid(w) {
+    if (myOpenid) return Promise.resolve(myOpenid);
+    return new Promise(function (resolve) {
+      if (!w || typeof w.getUserInfo !== 'function') { resolve(''); return; }
+      try {
+        w.getUserInfo({
+          success: function (res) {
+            myOpenid = (res && (res.openId || res.openid)) || '';
+            if (myOpenid) odLog('自己的 openid 已取到');
+            resolve(myOpenid);
+          },
+          fail: function (e) {
+            odLog('getUserInfo 失败：' + ((e && e.errMsg) || '未知'));
+            resolve('');
+          }
+        });
+      } catch (e) { resolve(''); }
+    });
+  }
+
   // 开放数据域的诊断日志（真机调试时看得到）
   function odLog(m) {
     try { if (typeof console !== 'undefined' && console.log) console.log('[open-data] ' + m); } catch (e) { /* ignore */ }
@@ -189,17 +222,31 @@
       } catch (e) { resolve(null); }
     });
 
-    return Promise.all([friendsP, selfP]).then(function (pair) {
+    // 先拿自己的 openid —— 好友列表里**平台会把自己也列进去**，
+    // 认出它才能标上 isSelf（否则底部会误判「未上榜」）
+    return fetchMyOpenid(w).then(function () {
+      return Promise.all([friendsP, selfP]);
+    }).then(function (pair) {
       var friendData = pair[0];
       var selfData = pair[1];
       var error = (friendData === null) ? '读不到好友数据' : '';
 
       var rows = [];
       var list = friendData || [];
+      var selfInFriends = false;
       for (var i = 0; i < list.length; i++) {
         var row = Board ? Board.normalizeFriendEntry(list[i], k) : null;
-        if (row) rows.push(row);      // 解析不出来 → 跳过，不占名次
+        if (!row) continue;           // 解析不出来 → 跳过，不占名次
+        // 好友列表里遇到自己 → 标上 isSelf
+        // （自读失败时，这一行就是「我」的唯一证据）
+        if (myOpenid && row.openid === myOpenid) {
+          row.isSelf = true;
+          selfInFriends = true;
+        }
+        rows.push(row);
       }
+      odLog('好友 ' + rows.length + ' 行（自己' + (selfInFriends ? '在列表里' : '不在列表里') +
+            '），自读 ' + ((selfData && selfData.length) ? selfData.length + ' 行' : '空'));
       var selfRow = null;
       var sList = selfData || [];
       for (var j = 0; j < sList.length; j++) {

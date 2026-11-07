@@ -190,6 +190,13 @@ function makeFakeWx(opts) {
       return img;
     },
     getSystemInfoSync: function () { return { pixelRatio: 2 }; },
+    // 开放数据域里 wx.getUserInfo 能拿到**自己的 openId**
+    // （真机上：靠它认出「好友列表里哪一行是我」）
+    getUserInfo: function (o) {
+      calls.userInfo = (calls.userInfo || 0) + 1;
+      if (opts.userInfoFail) { if (o.fail) o.fail({ errMsg: 'getUserInfo:fail' }); return; }
+      if (o.success) o.success({ openId: opts.myOpenid || 'o_me', nickName: '我' });
+    },
     onMessage: function (cb) { calls.onMessage = cb; }
   };
   return wx;
@@ -492,6 +499,62 @@ function odTexts(ctx) {
   ok(ts.length > 0, '拉取失败也没崩、画出了东西');
   ok(ts.some(t => t.indexOf('小明') >= 0),
     '**拉取失败时回退到缓存**（仍有好友昵称，不是空白）');
+}
+
+section('十、认出「好友列表里哪一行是我」（真机现象：榜上有我，底部却说未上榜）');
+
+const RN10 = ['灾难现场', '一团面条', '土豆', '饺子', '鸡蛋', '甜甜圈', '饼干',
+  '轮胎', '满月', '圆规', '教科书', '精密仪器', '神之圆'];
+
+{
+  // 真机现象（2026-11-07）：榜上**能看到自己**（78.3，托管数据是对的），
+  // 但底部写「本地最高 78.3（未上榜）」⇒ 说明开放域没认出哪一行是自己。
+  //
+  // 根因：`wx.getUserCloudStorage`（读自己的托管数据）没返回数据，
+  // 而**平台的好友列表里把自己也列进去了** ⇒ 那行被当成普通好友（没有 isSelf）。
+  //
+  // 修法：用 `wx.getUserInfo` 拿自己的 openId，凡是它就标上 isSelf。
+  const fake = makeFakeWx({
+    // 好友列表里有「自己」（平台的真实行为）
+    friends: [friendEntry('o_me', '我', 78.3, 9), friendEntry('o_1', '小明', 67.1, 8)],
+    myOpenid: 'o_me',
+    self: []          // ← 自读拿不到数据（这是问题的触发条件）
+  });
+  global.wx = fake;
+  delete require.cache[require.resolve('../../who-is-circle/open-data/index.js')];
+  const OD = require('../../who-is-circle/open-data/index.js');
+  OD.handleMessage({ type: 'showLeaderboard', key: 'circle', width: 750, height: 1624, scale: 2,
+    rankNames: RN10, style: {} }, fake);
+  await new Promise((r) => setTimeout(r, 60));
+
+  const ts = odTexts(fake.ctx);
+  ok(ts.some(t => t.indexOf('我') >= 0), '自己那一行画的是「我」而不是昵称',
+    ts.filter(t => t.indexOf('我') >= 0).join('|') || '(没画)');
+  ok(ts.some(t => t.indexOf('我的历史最高') >= 0),
+    '**底部显示「我的历史最高 · 第 N 名」**（不再是「未上榜」）',
+    ts.filter(t => t.indexOf('历史最高') >= 0).join('|') || '(没画)');
+  ok(ts.every(t => t.indexOf('本地最高') < 0), '**不再显示「本地最高 X（未上榜）」**');
+}
+
+{
+  // 拿不到自己的 openId（getUserInfo 失败）→ 退回旧逻辑，不能因此崩
+  const fake = makeFakeWx({
+    friends: [friendEntry('o_1', '小明', 67.1, 8)],
+    myOpenid: 'o_me',
+    userInfoFail: true,
+    self: [{ KVDataList: [{ key: 'circle', value: hosting(70, 8) }] }]
+  });
+  global.wx = fake;
+  delete require.cache[require.resolve('../../who-is-circle/open-data/index.js')];
+  const OD = require('../../who-is-circle/open-data/index.js');
+  OD.handleMessage({ type: 'showLeaderboard', key: 'circle', width: 750, height: 1624, scale: 2,
+    rankNames: RN10, style: {} }, fake);
+  await new Promise((r) => setTimeout(r, 60));
+  const ts = odTexts(fake.ctx);
+  ok(ts.some(t => t.indexOf('小明') >= 0), 'getUserInfo 失败也不影响画好友');
+  ok(ts.some(t => t.indexOf('我的历史最高') >= 0),
+    '自读成功时仍按自读认「我」',
+    ts.filter(t => t.indexOf('历史最高') >= 0).join('|') || '(没画)');
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);

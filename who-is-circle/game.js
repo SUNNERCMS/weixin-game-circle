@@ -1158,6 +1158,15 @@
       // **那个分数没人回收** ⇒ 本地永远存着一个云端不认的分数。
       // 等云端结论后：无效的局根本不会进本地存档，两个数字天然一致。
       res.cloudPending = !DEV;
+      // 兜底：云端结论回不来（超时/异常）时别把最佳分永远卡住。
+      // 超时 → 按「服务不可达」处理 → 解除等待 → 最佳分照常落定（保持单机行为）。
+      state.settleGuardTimer = setTimeout(function () {
+        state.settleGuardTimer = null;
+        if (state.bestPending && state.bestPending.cloudPending) {
+          state.bestPending.cloudPending = false;
+          odLog('云端结论超时 → 解除等待（最佳分照常落定）');
+        }
+      }, CFG.CLOUD_TIMEOUT_MS + 2000);
       // 最佳分的落定也要等云端 —— 结算页被关掉了也不能让本地最佳分比榜上虚高
       if (state.bestPending) state.bestPending.cloudPending = res.cloudPending;
       cloud.submitIfRecord({
@@ -1181,6 +1190,13 @@
   //   本地最佳分照常更新、徽章照常弹，只是不上榜、不弹错误提示
   function onCloudSettled(res, final) {
     if (!res || !final) return;
+    // 云端结论到了 → 解除兜底定时器
+    try {
+      if (state.settleGuardTimer) {
+        clearTimeout(state.settleGuardTimer);
+        state.settleGuardTimer = null;
+      }
+    } catch (e) { /* ignore */ }
     // 记下云端结论 —— 榜面底部那行用它说明「为什么本地最高分没上榜」
     state.lastVerdict = final.verdict || final.status || '';
     state.lastReason = final.reason || '';
