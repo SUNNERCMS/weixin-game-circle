@@ -217,24 +217,28 @@
     // 主域再把位图 **1:1 贴到整屏**（位图后备缓冲 = 主域画布的物理尺寸）→ 必然清晰。
     var cw = (typeof msg.canvasW === 'number' && msg.canvasW > 0) ? msg.canvasW : width;
     var ch = (typeof msg.canvasH === 'number' && msg.canvasH > 0) ? msg.canvasH : height;
-    var ds = (typeof msg.designScale === 'number' && msg.designScale > 0) ? msg.designScale : 1;
 
     var wantW = Math.round(cw), wantH = Math.round(ch);
-    var realW = 0, realH = 0, k = 1;
+    var realW = 0, realH = 0;
     try {
       canvas.width = wantW;
       canvas.height = wantH;
       realW = canvas.width;
       realH = canvas.height;
-      // 平台再裁就按比例补偿（内容跟着缩，别被裁掉）
-      if (realW > 0 && wantW > 0 && realW !== wantW) k = realW / wantW;
-      if (realH > 0 && wantH > 0 && realH !== wantH) k = Math.min(k, realH / wantH);
       if (realW !== wantW || realH !== wantH) {
-        odLog('画布尺寸与请求不符：请求 ' + wantW + '×' + wantH + ' 实际 ' + realW + '×' + realH +
-              ' → 内容按 ' + k.toFixed(3) + ' 缩放补偿');
+        odLog('画布被平台钳制：请求 ' + wantW + '×' + wantH + ' 实际 ' + realW + '×' + realH);
       }
     } catch (e) { /* 画布不可写就到此为止 */ }
-    var scale = ds * k;   // 设计px → 逻辑px
+
+    // ⭐ 密度 = **实际画布宽 / 设计宽**。
+    //
+    // 共享画布的位图有多大，就用多大去画 —— 文字按位图的原生分辨率渲染，
+    // 主域再 1:1 贴上去就是清晰的。
+    //
+    // 两种可能：
+    //   画布 = 1206×2622（主域设的物理尺寸）→ 密度 1.608 → 按物理分辨率画 ✅ 清晰
+    //   画布 = 402×874（平台钳制成屏幕逻辑尺寸）→ 密度 0.536 → 自动降级（布局不变，只是不够锐）
+    var scale = (realW > 0) ? (realW / width) : 1;
 
     // 卡片高度自适应（1 个人的榜不该是张空卡）
     var boardH = height;
@@ -308,14 +312,14 @@
       return;
     }
     Board.drawBoard(ctx, st.rows || [], opts);
-    if (DEBUG_OVERLAY) drawOdDebug(ctx, scale, realW, realH, wantW, wantH, k);
+    if (DEBUG_OVERLAY) drawOdDebug(ctx, scale, realW, realH, wantW, wantH);
   }
 
   // 开发期诊断：把画布的**实际尺寸**画进位图顶部。
   // 开放数据域的日志在真机调试里要切 Contexts 才看得到，
   // 而这两行数字是判断「平台裁不裁剪共享画布」的唯一依据 —— 画出来，截图就能看。
   var DEBUG_OVERLAY = true;
-  function drawOdDebug(ctx, sc, realW, realH, wantW, wantH, k) {
+  function drawOdDebug(ctx, sc, realW, realH, wantW, wantH) {
     try {
       ctx.setTransform(sc, 0, 0, sc, 0, 0);   // 画布坐标（去掉卡片的居中偏移）
       ctx.fillStyle = 'rgba(0,0,0,0.72)';
@@ -325,7 +329,7 @@
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillText('画布 ' + realW + 'x' + realH + '  请求 ' + wantW + 'x' + wantH +
-                   '  k=' + (typeof k === 'number' ? k.toFixed(3) : '-'), 8, 20);
+                   '  密度=' + (typeof sc === 'number' ? sc.toFixed(3) : '-'), 8, 20);
     } catch (e) { /* ignore */ }
   }
 

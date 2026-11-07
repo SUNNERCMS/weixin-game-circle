@@ -921,6 +921,22 @@
     try {
       var odc = w.getOpenDataContext();
       if (!odc || typeof odc.postMessage !== 'function') return false;
+      // ⭐ 共享画布的尺寸**由主域来设**：主域知道物理尺寸（env.width/height），
+      // 官方写法也是「把 sharedCanvas 铺满主画布」（drawImage(sc, 0, 0, canvas.width, canvas.height)）
+      // —— 要清晰，位图就得是物理像素大小。
+      //
+      // 之前是在开放域里设的：请求 700×scale = 1126×1897，平台钳成了 402×874
+      // （= 屏幕的**逻辑**尺寸），于是 402px 的位图被拉到 1201 物理px = **放大 3 倍 → 糊**。
+      // 主域设一次 + 开放域再设一次（同样的值），两边一致；
+      // 平台若仍然钳制，开放域会读回实际尺寸并按它算密度（自动降级，不会错位）。
+      try {
+        if (odc.canvas && env.width > 0 && env.height > 0) {
+          odc.canvas.width = env.width;
+          odc.canvas.height = env.height;
+          odLog('主域已设共享画布 ' + odc.canvas.width + '×' + odc.canvas.height +
+                '（物理px）');
+        }
+      } catch (e) { /* 设不了就让开放域自己设 */ }
       odc.postMessage(msg);
       return true;
     } catch (e) {
@@ -953,9 +969,10 @@
       // 共享画布**只能是屏幕大小**（逻辑px）—— 平台不接受别的尺寸。
       // 真机实测（2026-11-07）：请求 1126×1897，平台给的是 402×874
       // （= 屏幕逻辑尺寸 1206×2622 ÷ dpr 3）。所以按屏幕尺寸画、主域 1:1 贴。
-      canvasW: Math.round(env.width / env.dpr),        // 逻辑宽
-      canvasH: Math.round(env.height / env.dpr),       // 逻辑高
-      designScale: (env.width / env.dpr) / CFG.DESIGN_W, // 设计px → 逻辑px
+      // 共享画布的**物理**尺寸（= 主域画布的大小，官方写法就是铺满它）
+      canvasW: env.width,
+      canvasH: env.height,
+      designScale: view.scale,                          // 设计px → 物理px
       rankNames: LeaderboardBridge.resolveRankNames(RANKS),
       style: LeaderboardBridge.buildStyleParams()
     });
