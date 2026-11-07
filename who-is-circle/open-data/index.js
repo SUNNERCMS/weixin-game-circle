@@ -318,7 +318,7 @@
   // 开发期诊断：把画布的**实际尺寸**画进位图顶部。
   // 开放数据域的日志在真机调试里要切 Contexts 才看得到，
   // 而这两行数字是判断「平台裁不裁剪共享画布」的唯一依据 —— 画出来，截图就能看。
-  var DEBUG_OVERLAY = true;
+  var DEBUG_OVERLAY = false;   // 排查共享画布分辨率时用过，查完已关
   function drawOdDebug(ctx, sc, realW, realH, wantW, wantH) {
     try {
       ctx.setTransform(sc, 0, 0, sc, 0, 0);   // 画布坐标（去掉卡片的居中偏移）

@@ -97,8 +97,9 @@
     BTN_HIT_PAD: 24,     // 按钮热区外扩，保证 ≥88×88
     ICON_BTN_R: 48,      // 顶栏图标热区半径（96×96 设计px，满足触摸标准）
     ICON_SIZE: 40,       // 图标视觉直径
-    // 开发期诊断浮层：把共享画布的关键数字画在屏幕上（查完改成 false）
-    DEBUG_OVERLAY: true,
+    // 开发期诊断浮层：把共享画布的关键数字画在屏幕上（排查分辨率时用）
+    // 查完已关掉；要再查就改成 true。
+    DEBUG_OVERLAY: false,
     // P1：开放数据域占位内容在首页的贴图矩形（左上角 + 尺寸，设计px）
     // P4 起首页这块位置改成「好友排行」入口按钮（见 RANK_BTN）
     OD_PLACEHOLDER: { x: 125, y: 800, w: 500, h: 96 },
@@ -1565,9 +1566,9 @@
     if (btnY < L.backBtn.y - 140) btnY = L.backBtn.y - 140;
     drawButton(c, { x: L.backBtn.x, y: btnY, w: L.backBtn.w, h: L.backBtn.h },
                '返回', pressedRatio('rankBack'), false);
-    // 开发期诊断浮层：把贴图的关键数字画在屏幕上。
-    // 为什么画在屏幕上而不是只打日志：开放数据域的日志在真机调试里要切
-    // 「Contexts」才能看到，流程麻烦；画在屏幕上**截图就能看**。
+    // 开发期诊断浮层：把贴图的关键数字画在屏幕上，截图就能看。
+    // （排查共享画布分辨率时用过；查完了就关掉 —— 正式版不该有这行绿字。
+    //   需要时把 CFG.DEBUG_OVERLAY 改回 true 即可。）
     if (CFG.DEBUG_OVERLAY) drawRankDebug(c, L);
     c.restore();
   }
