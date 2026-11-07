@@ -299,6 +299,25 @@
       return;
     }
     Board.drawBoard(ctx, st.rows || [], opts);
+    if (DEBUG_OVERLAY) drawOdDebug(ctx);
+  }
+
+  // 开发期诊断：把画布的**实际尺寸**画进位图顶部。
+  // 开放数据域的日志在真机调试里要切 Contexts 才看得到，
+  // 而这两行数字是判断「平台裁不裁剪共享画布」的唯一依据 —— 画出来，截图就能看。
+  var DEBUG_OVERLAY = true;
+  function drawOdDebug(ctx) {
+    try {
+      ctx.setTransform(dpr * k, 0, 0, dpr * k, 0, 0);   // 回到画布坐标（去掉垂直居中的偏移）
+      ctx.fillStyle = 'rgba(0,0,0,0.72)';
+      ctx.fillRect(0, 0, 700, 40);
+      ctx.fillStyle = '#7CFFB2';
+      ctx.font = '22px monospace';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('画布 ' + realW + 'x' + realH + '  请求 ' + wantW + 'x' + wantH +
+                   '  k=' + (typeof k === 'number' ? k.toFixed(3) : '-'), 8, 20);
+    } catch (e) { /* ignore */ }
   }
 
   function renderNow() {
