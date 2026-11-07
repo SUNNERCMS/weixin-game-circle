@@ -106,7 +106,7 @@ who-is-circle-tests/
 | Q2 | 隐私门禁放 P4 还是 P5？ | **放 P4**。设计文档 §十把 §8.3 列在 P5，但门禁缺了会出事：玩家点了按钮 → `wx.getFriendCloudStorage` 失败 → 榜空白 → **玩家没有路径去授权**，功能对他永久不可用。合规上也不该先发一版会拉好友数据却不管授权的。P4 做**最小闭环**（三态检查 → authorize → 不行就 `wx.openSetting`），P5 做视觉打磨。 |
 | Q3 | 段位名从哪来？ | **主域发 `rankNames`（13 个名字）**。开放数据域不能 `require` 主域的 `shared/scoring.js`，自己复制一份段位表必然漂移（云函数那份已经有 sha256 断言了，主域这份不能再分叉）。 |
 | Q4 | 「我的历史最高 92.4 · 第 3 名」画在哪？ | **画在开放域的 sharedCanvas 底部**。开放域 → 主域是单向的，名次回不去（见上）。设计文档 §8.2 那句「主域只画文案」要改。 |
-| Q5 | 自己怎么进榜、怎么认出来？ | `wx.getUserCloudStorage` 单独拉 → **按来源**标记 `isSelf`（不是按 openid 比对：`getUserCloudStorage` 的返回里没有 openid，云函数出参也没有 openid，没法拿它做键）。好友列表内部按 openid 去重（保留分高的那条）。若某个好友行与自己的昵称**和**分数都相同，视为同一人丢掉好友行（平台保证好友列表不含自己，这只是廉价兜底）。 |
+| Q5 | 自己怎么进榜、怎么认出来？ | `wx.getUserCloudStorage` 单独拉 → **按来源**标记 `isSelf`（不是按 openid 比对：`getUserCloudStorage` 的返回里没有 openid，云函数出参也没有 openid，没法拿它做键）。**自己的名字直接画「我」** —— 开放域拿不到自己的昵称（`getUserCloudStorage` 不返回），我们知道那行是我们就够了。好友列表内部按 openid 去重（保留分高的那条）。若某行与自己的**托管数据原文完全相同** → 视为同一人，丢掉好友那行（平台保证好友列表不含自己；用原文而不是分数做判据 —— 两个人同分很常见，但「同样的分 + 段位 + update_time（秒级）」几乎只可能是同一次写入）。 |
 | Q6 | 托管数据读不到自己的怎么办？ | 三态：**读到了且有数据** → 正常入榜、正常名次；**读到了但没有托管数据**（从没上榜）→ 不入榜，底部显示「你还没有上榜」；**API 失败** → 用消息里的 `selfScore` 兜底画一行，**不参与排序、不给名次**，底部显示「本地最高 X（未上榜）」。绝不用本地分冒充榜上的分。 |
 | Q7 | 榜上放不下怎么办？ | 内容区 700×1180，行高 96 → 最多画 **10 行**。底部那行分两段：**左**＝自己的信息（名次或未上榜），**右**＝「还有 N 位好友在玩」（仅当超出 10 行时才画）。哪怕自己不在前 10 行里，底部也显示**真名次**。 |
 | Q8 | 好友数为 0 / 只有 1 人？ | 0 人 → 画「还没有好友在玩」+ 一句引导；≤1 人 → **不画名次列**（设计文档 §十二 风险表的要求，没对比就不占地方）。 |
@@ -142,7 +142,7 @@ who-is-circle-tests/
 | 分数 | 右对齐到 x=700，`scoreSize`，`toFixed(1)` |
 
 - 昵称按测量宽度截断到 `430 − 150 − 段位名宽 − 分数宽 − 间距`
-- 自己的行：整行文字用 `colorSelf`，昵称前加「我 · 」前缀
+- 自己的行：**名字画成「我」**（开放域拿不到自己的昵称），整行文字用 `colorSelf`
 - `v === 'unverified'` 的行：段位名后面画一个小角标「未完全验证」（`colorDim`，24px）
 
 ## 任务
@@ -167,7 +167,8 @@ clampStyle(style)                   // → style（每项钳制；缺失/越界 
 drawBoard(ctx, rows, opts)          // → 画到画布；opts: {width,height,style,rankNames,avatarImages,selfScore,emptyText}
 ```
 
-row 结构：`{ openid, nickname, avatarUrl, score, level, verdict, isSelf }`（`rank` 在 `mergeRows` 之后附加）
+row 结构：`{ openid, nickname, avatarUrl, score, level, verdict, isSelf, raw }`
+（`raw` = 托管数据原文，用来判「是不是同一个人」；`rank` 在 `mergeRows` 之后附加）
 
 - [ ] **Step 1：写失败用例**（`unit/board.test.js`）
 
@@ -180,13 +181,14 @@ row 结构：`{ openid, nickname, avatarUrl, score, level, verdict, isSelf }`（
   - `mergeRows` 三行（97.8 / 92.4 / 97.8）→ 名次 1,2,3（**同分要有稳定次序**，用输入顺序做 tiebreak）
   - `mergeRows` 传入自己那行 → 该行 `isSelf === true` 且 `rank` 正确
   - `mergeRows` 好友列表里同一个 openid 出现两次 → 只留一条（保留分高的）
-  - `mergeRows` 好友行与自己的昵称+分数都相同 → 好友行被丢掉
+  - `mergeRows` 某行与自己的**托管数据原文相同** → 好友行被丢掉（自己不会在榜上出现两次）
+  - `mergeRows` 某行与自己**同分但原文不同** → 两个人都留（不能只凭分数去重）
   - `truncateText(ctx, '很长很长很长', 100)` → 宽度 ≤ 100 且以 `…` 结尾
   - `truncateText` 文本本身就短 → 原样返回
   - `rankNameOf(99, rankNames)` → 越界 → `'段位 ?'`
   - `clampStyle({rowH:0, nameSize:999, colorText:'red'})` → `rowH` 回到默认、`nameSize` 被钳到上限、`colorText` 保持合法颜色
   - `clampStyle(undefined)` → 全部默认值
-  - `drawBoard` 用假 ctx 断言：行数 = rows.length、`fillText` 调用里出现了「1」「2」「3」名次、自己的行用了 `colorSelf`、`unverified` 出现了「未完全验证」
+  - `drawBoard` 用假 ctx 断言：行数 = rows.length、`fillText` 调用里出现了「1」「2」「3」名次、自己的行名字是「我」且用了 `colorSelf`、`unverified` 出现了「未完全验证」
 
   假 ctx 至少要有：`fillText`、`measureText`（返回 `{width: 文本长度 × 字号 / 2}`）、`fillRect`、`fill`、`stroke`、`arc`、`save`、`restore`、`translate`、`beginPath`、`closePath`、`setTransform`、`measureText`。
 
@@ -201,7 +203,7 @@ row 结构：`{ openid, nickname, avatarUrl, score, level, verdict, isSelf }`（
   - `parseHostingValue`：`JSON.parse` 包 try/catch；取 `wxgame.score / 10`、`level`、`v`（缺省 `'ok'`）；`score` 非有限数或为负 → `null`
   - `normalizeFriendEntry(entry, key)`：从 `entry.KVDataList` 里找 `key` 匹配的那条 → 解析它的 `value`；解析不出 → `null`（**该好友直接跳过，不占名次**）
   - `normalizeSelfEntry(entry, key)`：同上，但 `isSelf = true`
-  - `mergeRows(friendRows, selfRow)`：好友按 openid 去重（保留 score 大的）→ 若某好友行的 nickname 与 score 都等于自己那行 → 丢掉该好友行 → 拼上自己那行 → 按 score 降序排（**同分按输入顺序稳定**）→ 附加 `rank = index + 1`
+  - `mergeRows(friendRows, selfRow)`：好友按 openid 去重（保留 score 大的，位置不动）→ 若某行的 `raw` 与自己那行的 `raw` 完全相同 → 丢掉它（自己不会在榜上出现两次）→ 拼上自己那行 → 按 score 降序排（**同分按输入顺序稳定**）→ 附加 `rank = index + 1`
 
   跑 `node unit/board.test.js` → 前半段断言应转绿。
 
@@ -219,7 +221,7 @@ row 结构：`{ openid, nickname, avatarUrl, score, level, verdict, isSelf }`（
     `名次(右对齐) | 头像 | 昵称 | 段位名 | 分数(右对齐)`
   - `opts.avatarImages` 是 `openid → image 对象` 的映射；缺失或未加载完 → 画兜底圆 + 昵称首字（**不崩、不留白**）
   - 昵称按测量宽度截断（`truncateText`），空昵称用「微信用户」
-  - 自己的行：文字用 `colorSelf`，昵称前加「我 · 」前缀
+  - 自己的行：**名字画成「我」**（开放域拿不到自己的昵称），整行文字用 `colorSelf`
   - `verdict === 'unverified'` 的行：段位名后画「未完全验证」角标（`colorDim`，24px）
   - **底部固定一行**（y = 1180 − 96，上边框线 `colorLine`）：
     - 左半：自己有行 → 「我的历史最高 {score.toFixed(1)} · 第 {rank} 名」
