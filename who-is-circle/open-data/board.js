@@ -79,6 +79,28 @@
   var SCORE_W = 104;       // 分数列预留宽度
   var PILL_H = 28;         // 胶囊高度
   var EMPTY_H = 520;       // 空态时的卡片高度（够放下空心圆 + 两行文案）
+
+  // ---- 「整屏页」布局 ----
+  //
+  // 为什么要有这一套：共享画布**就是屏幕**（真机实测 402×874 逻辑px = 屏幕逻辑尺寸）。
+  // 在屏幕里再放一张「卡片」，卡片只占位图的 1/3 宽度 → 剩下的必须放大回去 → 糊。
+  // 所以整屏都画上：每个像素都用上，文字按屏幕原生分辨率画 → 清晰。
+  //
+  // 也顺手解决「到底是弹窗还是页面」：去掉暗遮罩与浮空卡片，它就是一个**页面**。
+  var PAGE = {
+    pad: 40,             // 左右留白
+    titleY: 200,         // 标题基线（避开右上角微信胶囊）
+    titleSize: 40,
+    subSize: 24,
+    ruleY: 252,          // 标题下的分隔线
+    rowTop: 290,         // 行区顶部
+    rowH: 108,           // 行高
+    badgeX: 66,          // 名次徽章圆心
+    avatarX: 136,        // 头像圆心
+    nameX: 186,          // 昵称 / 段位名左边距
+    scoreX: 710,         // 分数右对齐
+    bottomY: 1400        // 底部「我的成绩」那行
+  };
   var SELF_NAME = '我';    // 开放域拿不到自己的昵称 —— 我们知道那是我，就画「我」
 
   // ---- 托管数据解析 ----
@@ -373,80 +395,98 @@
     var rankNames = o.rankNames || [];
     var avatars = o.avatarImages || {};
     var list = rows || [];
+    var isPage = !!o.page;      // 整屏页 vs 卡片
 
     var selfRow = null;
     for (var s = 0; s < list.length; s++) { if (list[s].isSelf) { selfRow = list[s]; break; } }
 
-    // ---- 卡面高度跟着行数走 ----
-    // 固定高度的话，1 个人的榜就是一张空荡荡的大卡；高度自适应才像"一张纸"。
+    // ---- 高度 ----
+    // 整屏页：高度 = 屏幕的设计高度（开放域给的 pageH）
+    // 卡片：高度跟着行数走（1 个人的榜不该是张空卡）
     var plan = rowPlan(list, o);
-    var rowH = plan.rowH;
-    var maxRows = plan.maxRows;
-    var shown = plan.shown;
-    // 卡高优先用调用方给的（o.boardH）——
-    // 开放数据域必须先把共享画布按这个高度建好（改 canvas.height 会清空画布），
-    // 两边各算一次就可能对不上（真机上出现过：画布比卡片高 → 下面多一条白带）。
-    var H = (typeof o.boardH === 'number' && o.boardH > 0) ? o.boardH : plan.H;
+    var rowH = isPage ? PAGE.rowH : plan.rowH;
+    var maxRows = isPage ? Math.max(1, Math.floor((PAGE.bottomY - PAGE.rowTop) / rowH))
+                         : plan.maxRows;
+    var shown = Math.min(list.length, maxRows);
+    var H = isPage ? ((typeof o.pageH === 'number' && o.pageH > 0) ? o.pageH : 1624)
+                   : ((typeof o.boardH === 'number' && o.boardH > 0) ? o.boardH : plan.H);
+
+    // ---- 布局参数（两套布局共用同一套绘制代码）----
+    var L = isPage ? PAGE : {
+      pad: PAD, titleY: TITLE_H / 2, titleSize: 34, subSize: 24, ruleY: TITLE_H - 1,
+      rowTop: ROW_TOP, rowH: rowH, badgeX: BADGE_X, avatarX: AVATAR_X,
+      nameX: NAME_X, scoreX: SCORE_X, bottomY: H - BOTTOM_H / 2
+    };
 
     ctx.save();
 
-    // ---- 卡片：圆角 + 极轻的投影 + 一圈描边 ----
-    // 一块直角矩形贴在暗幕上会像贴纸；圆角 + 投影才有"一张纸"的实体感。
-    ctx.save();
-    ctx.shadowColor = 'rgba(44,44,42,0.16)';
-    ctx.shadowBlur = 24;
-    ctx.shadowOffsetY = 8;
-    ctx.fillStyle = st.colorPanel;
-    roundRect(ctx, 0, 0, W, H, CARD_R);
-    ctx.fill();
-    ctx.restore();
-    ctx.strokeStyle = st.colorLine;
-    ctx.lineWidth = 1;
-    roundRect(ctx, 0.5, 0.5, W - 1, H - 1, CARD_R);
-    ctx.stroke();
+    // ---- 背景 ----
+    if (isPage) {
+      // 整屏页：满屏纸底，不要遮罩、不要圆角卡片 —— 它就是一个页面
+      ctx.fillStyle = st.colorPanel;
+      ctx.fillRect(0, 0, W, H);
+    } else {
+      // 卡片：圆角 + 极轻的投影 + 一圈描边
+      // 一块直角矩形贴在暗幕上会像贴纸；圆角 + 投影才有"一张纸"的实体感。
+      ctx.save();
+      ctx.shadowColor = 'rgba(44,44,42,0.16)';
+      ctx.shadowBlur = 24;
+      ctx.shadowOffsetY = 8;
+      ctx.fillStyle = st.colorPanel;
+      roundRect(ctx, 0, 0, W, H, CARD_R);
+      ctx.fill();
+      ctx.restore();
+      ctx.strokeStyle = st.colorLine;
+      ctx.lineWidth = 1;
+      roundRect(ctx, 0.5, 0.5, W - 1, H - 1, CARD_R);
+      ctx.stroke();
+    }
 
-    // ---- 标题区（卡内自洽，不飘在遮罩上）----
+    // ---- 标题区 ----
     ctx.fillStyle = st.colorText;
-    ctx.font = 'bold 34px sans-serif';
+    ctx.font = 'bold ' + L.titleSize + 'px sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillText('好友排行', PAD, TITLE_H / 2);
+    ctx.fillText('好友排行', L.pad, L.titleY);
 
     var friends = list.length - (selfRow ? 1 : 0);
     ctx.fillStyle = st.colorDim;
-    ctx.font = '24px sans-serif';
+    ctx.font = L.subSize + 'px sans-serif';
     ctx.textAlign = 'right';
-    ctx.fillText(friends > 0 ? (friends + ' 位好友在玩') : '暂无好友', SCORE_X, TITLE_H / 2);
+    ctx.fillText(friends > 0 ? (friends + ' 位好友在玩') : '暂无好友', L.scoreX, L.titleY);
 
     ctx.fillStyle = st.colorLine;
-    ctx.fillRect(PAD, TITLE_H - 1, W - PAD * 2, 1);
+    ctx.fillRect(L.pad, L.ruleY, W - L.pad * 2, 1);
 
     // ---- 空态：画一个空心圆（呼应"画圆"这件事），不是一行灰字 ----
     if (!list.length) {
+      // 空态：画一个空心圆（呼应"画圆"这件事），不是一行灰字
+      var ecx = W / 2;
+      var ecy = isPage ? (L.rowTop + L.bottomY) / 2 - 50 : H / 2 - 60;
       ctx.strokeStyle = st.colorLine;
       ctx.lineWidth = 3;
       ctx.beginPath();
-      ctx.arc(W / 2, H / 2 - 60, 54, 0, Math.PI * 2);
+      ctx.arc(ecx, ecy, 54, 0, Math.PI * 2);
       ctx.stroke();
       ctx.fillStyle = st.colorText;
       ctx.font = '32px sans-serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.fillText(o.emptyText || '还没有好友在玩', W / 2, H / 2 + 46);
+      ctx.fillText(o.emptyText || '还没有好友在玩', ecx, ecy + 106);
       ctx.fillStyle = st.colorDim;
       ctx.font = '24px sans-serif';
-      ctx.fillText('叫上朋友，一起画圆吧', W / 2, H / 2 + 92);
+      ctx.fillText('叫上朋友，一起画圆吧', ecx, ecy + 152);
       ctx.restore();
       return;
     }
 
     // ---- 行区 ----
     var showRank = list.length > 1;      // 只有 1 个人时不画名次列（没对比就不占地方）
-    var nameMaxW = SCORE_X - SCORE_W - NAME_X - 12;
+    var nameMaxW = L.scoreX - SCORE_W - L.nameX - 12;
 
     for (var i = 0; i < shown; i++) {
       var r = list[i];
-      var y = ROW_TOP + i * rowH;
+      var y = L.rowTop + i * rowH;
       var cy = y + rowH / 2;
       var isSelf = !!r.isSelf;
       var color = isSelf ? st.colorSelf : st.colorText;
@@ -455,19 +495,19 @@
       // 自己的行：淡底 + 左侧竖条（只换字色，扫一眼找不着自己）
       if (isSelf) {
         ctx.fillStyle = st.colorSelfBg;
-        ctx.fillRect(12, y, W - 12, rowH);
+        ctx.fillRect(L.pad - 12, y, W - L.pad + 12, rowH);
         ctx.fillStyle = st.colorSelf;
-        ctx.fillRect(12, y + 6, 4, rowH - 12);
+        ctx.fillRect(L.pad - 12, y + 6, 4, rowH - 12);
       }
 
       // 行分隔线（自己的行有底色，不用再画线）
       if (i > 0 && !isSelf) {
         ctx.fillStyle = st.colorLine;
-        ctx.fillRect(PAD, y, W - PAD * 2, 1);
+        ctx.fillRect(L.pad, y, W - L.pad * 2, 1);
       }
 
       // 名次徽章
-      drawRankBadge(ctx, r.rank || (i + 1), BADGE_X, cy, st, showRank);
+      drawRankBadge(ctx, r.rank || (i + 1), L.badgeX, cy, st, showRank);
 
       // 头像（加载失败 / 没加载完 → 色块 + 首字兜底）
       if (st.showAvatar) {
@@ -477,15 +517,15 @@
           try {
             ctx.save();
             ctx.beginPath();
-            ctx.arc(AVATAR_X, cy, st.avatarR, 0, Math.PI * 2);
+            ctx.arc(L.avatarX, cy, st.avatarR, 0, Math.PI * 2);
             ctx.clip();
-            ctx.drawImage(img, AVATAR_X - st.avatarR, cy - st.avatarR, st.avatarR * 2, st.avatarR * 2);
+            ctx.drawImage(img, L.avatarX - st.avatarR, cy - st.avatarR, st.avatarR * 2, st.avatarR * 2);
             ctx.restore();
             drawn = true;
           } catch (e) { drawn = false; }
         }
-        if (!drawn) avatarFallback(ctx, AVATAR_X, cy, st.avatarR, name.charAt(0), color);
-        drawAvatarRing(ctx, AVATAR_X, cy, st.avatarR);
+        if (!drawn) avatarFallback(ctx, L.avatarX, cy, st.avatarR, name.charAt(0), color);
+        drawAvatarRing(ctx, L.avatarX, cy, st.avatarR);
       }
 
       // 昵称（第一行；按测量宽度截断，绝不撞到分数列）
@@ -493,11 +533,11 @@
       ctx.font = st.nameSize + 'px sans-serif';
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillText(truncateText(ctx, name, nameMaxW), NAME_X, cy - 14);
+      ctx.fillText(truncateText(ctx, name, nameMaxW), L.nameX, cy - 14);
 
       // 段位名胶囊 + 未完全验证胶囊（放第二行 —— 跟昵称挤在一行会压到分数上）
       var rname = rankNameOf(r.level, rankNames);
-      var px = NAME_X;
+      var px = L.nameX;
       var py = cy + 6;
       if (rname) {
         px += drawPill(ctx, px, py, rname, {
@@ -518,13 +558,14 @@
       ctx.font = 'bold ' + st.scoreSize + 'px sans-serif';
       ctx.textAlign = 'right';
       ctx.textBaseline = 'middle';
-      ctx.fillText(scoreText, SCORE_X, cy - 14);
+      ctx.fillText(scoreText, L.scoreX, cy - 14);
     }
 
     // ---- 底部：我的成绩（名次算好了也传不回主域，只能画在这里）----
-    var by = H - BOTTOM_H;
+    // 整屏页：分隔线画在**名单的底部**（不是固定位置，否则会压到最后一行）
+    var by = isPage ? (L.rowTop + shown * rowH) : (H - BOTTOM_H);
     ctx.fillStyle = st.colorLine;
-    ctx.fillRect(PAD, by, W - PAD * 2, 1);
+    ctx.fillRect(L.pad, by, W - L.pad * 2, 1);
     var left;
     if (selfRow) {
       left = '我的历史最高 ' + selfRow.score.toFixed(1) + ' · 第 ' + selfRow.rank + ' 名';
@@ -537,14 +578,14 @@
     ctx.font = '26px sans-serif';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    ctx.fillText(truncateText(ctx, left, W * 0.56), PAD, by + BOTTOM_H / 2);
+    ctx.fillText(truncateText(ctx, left, W * 0.56), L.pad, by + BOTTOM_H / 2);
 
     // 放不下时说明还剩多少人
     if (list.length > maxRows) {
       ctx.fillStyle = st.colorDim;
       ctx.font = '24px sans-serif';
       ctx.textAlign = 'right';
-      ctx.fillText('还有 ' + (list.length - maxRows) + ' 位好友在玩', SCORE_X, by + BOTTOM_H / 2);
+      ctx.fillText('还有 ' + (list.length - maxRows) + ' 位好友在玩', L.scoreX, by + BOTTOM_H / 2);
     }
 
     ctx.restore();

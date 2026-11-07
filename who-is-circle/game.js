@@ -108,10 +108,8 @@
     // （它在 y=740），按钮会压到字上，所以往下挪到 830。
     RANK_BTN: { x: 375, y: 830, w: 280, h: 88 },
     RANK_PANEL: {
-      mask: { x: 0, y: 0, w: 750, h: 1624 },
-      title: { x: 375, y: 150 },
-      content: { x: 25, y: 210, w: 700, h: 1180 },   // 开放数据域画的榜面贴在这里
-      backBtn: { x: 375, y: 1500, w: 340, h: 96 }
+      pageTitle: { x: 40, y: 200 },                  // 整屏页的标题（开放数据域画）
+      backBtn: { x: 375, y: 1520, w: 340, h: 96 }    // 返回按钮（主域画：触摸在这边）
     },
     MAX_POINTS: 900,     // 笔迹点上限：超出后均匀抽稀，避免长笔迹被硬截断而画面冻结
 
@@ -943,8 +941,8 @@
       key: CFG.CLOUD_KEY,
       selfScore: best,
       selfLevel: level,
-      width: CFG.RANK_PANEL.content.w,
-      height: CFG.RANK_PANEL.content.h,
+      width: CFG.DESIGN_W,        // 整屏页 = 设计网格整屏
+      height: CFG.DESIGN_H,
       // ⚠️ 这里传的是**主域的物理像素/设计像素**比例（view.scale ≈ 1.56），
       // **不是设备像素比 env.dpr（≈3）**。
       //
@@ -958,8 +956,6 @@
       canvasW: Math.round(env.width / env.dpr),        // 逻辑宽
       canvasH: Math.round(env.height / env.dpr),       // 逻辑高
       designScale: (env.width / env.dpr) / CFG.DESIGN_W, // 设计px → 逻辑px
-      rectX: CFG.RANK_PANEL.content.x,                 // 内容矩形左上角（卡片画在这里）
-      rectY: CFG.RANK_PANEL.content.y,
       rankNames: LeaderboardBridge.resolveRankNames(RANKS),
       style: LeaderboardBridge.buildStyleParams()
     });
@@ -1418,7 +1414,7 @@
   // 按 sharedCanvas 的实际宽高比等比居中 —— 开放数据域改了尺寸也不会拉伸变形，
   // 主域也不必和它约定死尺寸（少一份会漂移的常量）。
   // @returns {boolean} 贴上了没有（false = 主域可以自己画兜底）
-  function drawSharedCanvas(c, rect) {
+  function drawSharedCanvas(c) {
     var sc = getOdCanvas();
     if (!sc || !sc.width || !sc.height) {
       // 没通 → 日志里留一句，断在哪一目了然
@@ -1434,7 +1430,7 @@
     // 共享画布 = 屏幕大小（逻辑px），它的后备缓冲 = 主域画布的物理尺寸 ——
     // 所以按**整屏 1:1** 贴：既清晰又不变形。
     // 卡片在画布里的位置由开放数据域决定（它按内容矩形画），主域不用知道。
-    var pr = computePasteRect(sc, rect);
+    var pr = computePasteRect(sc);
     var w = pr.w, h = pr.h;
     if (odLogState === 1) {
       odLogState = 2;
@@ -1462,7 +1458,7 @@
    * 位图的**密度**由开放数据域负责对齐（它按主域给的 scale 画），
    * 主域只管「等比贴进矩形」—— 密度对上了就是 1:1，既不糊也不变形。
    */
-  function computePasteRect(sc, rect) {
+  function computePasteRect(sc) {
     // 共享画布是**屏幕大小**（逻辑px）→ 贴满整屏，1:1 物理像素。
     // 位图的宽高比与设计网格不一致时（不同机型），按位图比例算高度并垂直居中，
     // 这样不会拉伸变形。
@@ -1532,20 +1528,13 @@
     c.globalAlpha = alpha;
     c.translate(dx, 0);
     var L = CFG.RANK_PANEL;
-    // 遮罩：上深下浅。
-    // 死黑 55% 会把暖白纸底压成脏灰；渐变让卡片像"浮在暗幕上"而不是"贴在暗幕上"。
-    var grad = c.createLinearGradient(0, 0, 0, CFG.DESIGN_H);
-    grad.addColorStop(0, 'rgba(38,36,32,0.78)');
-    grad.addColorStop(1, 'rgba(38,36,32,0.52)');
-    c.fillStyle = grad;
-    c.fillRect(L.mask.x, L.mask.y, L.mask.w, L.mask.h);
-    // 榜面内容（标题也在卡里 —— 开放数据域画的，卡才自洽）
-    if (!drawSharedCanvas(c, L.content)) {
-      // 兜底：开放数据域没连上 → 标题由主域补上，别让用户对着空白发呆
-      fillText(c, '好友排行', L.title.x, L.title.y, 'bold 44px sans-serif', '#FFFFFF');
-      drawOdFallback(c, L.content, '还没准备好', '（开放数据域未连通）');
+    // 榜面 = **整屏页**（开放数据域画满一屏）。
+    // 共享画布就是屏幕（真机实测 402×874 逻辑px = 屏幕逻辑尺寸），
+    // 所以按 1:1 贴整屏：既清晰又不变形，也不用"遮罩 + 浮空卡片"那套弹窗语言。
+    if (!drawSharedCanvas(c)) {
+      drawRankFallback(c, L);
     }
-    // 底部返回
+    // 底部返回（主域画：触摸在这边处理）
     drawButton(c, L.backBtn, '返回', pressedRatio('rankBack'), false);
     // 开发期诊断浮层：把贴图的关键数字画在屏幕上。
     // 为什么画在屏幕上而不是只打日志：开放数据域的日志在真机调试里要切
@@ -1554,10 +1543,23 @@
     c.restore();
   }
 
+  // 开放数据域没连上时主域自己画的兜底页（别让用户对着空白发呆）
+  function drawRankFallback(c, L) {
+    c.save();
+    c.fillStyle = COL.INK_BG;
+    c.fillRect(0, 0, CFG.DESIGN_W, CFG.DESIGN_H);
+    fillText(c, '好友排行', CFG.RANK_PANEL.pageTitle.x, CFG.RANK_PANEL.pageTitle.y,
+             'bold 40px sans-serif', COL.ink);
+    fillText(c, '还没准备好', CFG.DESIGN_W / 2, CFG.DESIGN_H / 2, '32px sans-serif', COL.grayText);
+    fillText(c, '（开放数据域未连通）', CFG.DESIGN_W / 2, CFG.DESIGN_H / 2 + 46,
+             '24px sans-serif', COL.grayText);
+    c.restore();
+  }
+
   // 画一排诊断数字（开发期用，查完把 CFG.DEBUG_OVERLAY 关掉）
   function drawRankDebug(c, L) {
     var sc = getOdCanvas();
-    var pr = computePasteRect(sc || { width: 0, height: 0 }, L.content);
+    var pr = computePasteRect(sc || { width: 0, height: 0 });
     var txt = 'sc ' + (sc ? sc.width + 'x' + sc.height : 'none') +
               '  贴 ' + Math.round(pr.w) + 'x' + Math.round(pr.h) +
               '  scale ' + view.scale.toFixed(3) +

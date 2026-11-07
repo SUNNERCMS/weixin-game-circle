@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>好友榜 · 整屏页 预览</title>
+<style>
+  body {
+    margin: 0; padding: 24px;
+    background: #EFECE4;
+    font: 14px/1.6 -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    color: #2C2C2A;
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .hint { color: #6E685E; margin: 0 0 20px; font-size: 13px; }
+  .row { display: flex; gap: 20px; flex-wrap: wrap; align-items: flex-start; }
+  figure { margin: 0; }
+  figcaption { font-size: 12px; color: #6E685E; margin-top: 8px; text-align: center; }
+  .phone {
+    background: #111; border-radius: 20px; padding: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.18);
+  }
+  canvas { display: block; border-radius: 14px; }
+</style>
+</head>
+<body>
+<h1>好友榜 · 整屏页</h1>
+<p class="hint">
+  共享画布 = 屏幕（402×874 逻辑px），所以整屏都画上，每个像素都用上 → 文字按屏幕原生分辨率画。<br>
+  这里按 <code>designScale = 402/750</code> 缩放渲染，模拟真机上的观感。
+</p>
+
+<div class="row" id="row"></div>
+
+<script src="../../who-is-circle/open-data/board.js?v=6"></script>
+<script>
+(function () {
+  'use strict';
+
+  var RANK_NAMES = ['灾难现场', '一团面条', '土豆', '饺子', '鸡蛋', '甜甜圈', '饼干',
+    '轮胎', '满月', '圆规', '教科书', '精密仪器', '神之圆'];
+
+  var DESIGN_W = 750, DESIGN_H = 1624;
+  var LOGICAL_W = 402, LOGICAL_H = 874;
+  var DS = LOGICAL_W / DESIGN_W;          // 设计px → 逻辑px
+  var PX = LOGICAL_W / DESIGN_W;         // 预览用的比例（逻辑px → 屏幕CSS px，取 0.5 便于看）
+
+  function mkRows(n, opts) {
+    opts = opts || {};
+    var base = [
+      { nickname: '苏晚晴', score: 98.6, level: 12, verdict: 'ok' },
+      { nickname: '陈小舟', score: 97.4, level: 12, verdict: 'ok' },
+      { nickname: '一个名字特别长的好友测试', score: 96.2, level: 11, verdict: 'unverified' },
+      { nickname: '林一', score: 94.8, level: 11, verdict: 'ok' },
+      { nickname: '周未眠', score: 93.1, level: 10, verdict: 'ok' },
+      { nickname: 'A', score: 91.7, level: 9, verdict: 'ok' },
+      { nickname: '赵青山', score: 88.3, level: 9, verdict: 'ok' },
+      { nickname: '钱小满', score: 85.0, level: 8, verdict: 'ok' },
+      { nickname: '孙大壮', score: 79.2, level: 7, verdict: 'ok' },
+      { nickname: '李思', score: 74.5, level: 6, verdict: 'ok' },
+      { nickname: '吴桐', score: 68.1, level: 6, verdict: 'ok' },
+      { nickname: '郑一鸣', score: 61.3, level: 5, verdict: 'ok' }
+    ];
+    var rows = [];
+    for (var i = 0; i < n && i < base.length; i++) {
+      var b = base[i];
+      rows.push({
+        openid: 'o_' + i, nickname: b.nickname, avatarUrl: '',
+        score: b.score, level: b.level, verdict: b.verdict, isSelf: false, rank: i + 1
+      });
+    }
+    if (opts.self) {
+      rows.push({
+        openid: 'o_self', nickname: '我', avatarUrl: '',
+        score: opts.self.score, level: opts.self.level,
+        verdict: 'ok', isSelf: true, rank: rows.length + 1
+      });
+    }
+    return rows;
+  }
+
+  function drawPage(canvas, rows, extra) {
+    extra = extra || {};
+    var dpr = 2;
+    var pageH = Math.round(LOGICAL_H / DS);      // 屏幕的设计高度
+    canvas.width = DESIGN_W * dpr;
+    canvas.height = pageH * dpr;
+    canvas.style.width = (DESIGN_W * PX) + 'px';
+    canvas.style.height = (pageH * PX) + 'px';
+    var ctx = canvas.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    Board.drawBoard(ctx, rows, {
+      width: DESIGN_W,
+      height: pageH,
+      page: true,
+      pageH: pageH,
+      style: {},
+      rankNames: RANK_NAMES,
+      selfScore: (typeof extra.selfScore === 'number') ? extra.selfScore : null,
+      emptyText: extra.emptyText || '还没有好友在玩'
+    });
+    // 返回按钮（主域画的）：贴一个示意
+    var bw = 340, bh = 96, bx = 375, by = 1520;
+    ctx.fillStyle = '#F1EDE4';
+    ctx.beginPath();
+    var r = bh / 2;
+    ctx.moveTo(bx - bw / 2 + r, by - bh / 2);
+    ctx.arcTo(bx + bw / 2, by - bh / 2, bx + bw / 2, by + bh / 2, r);
+    ctx.arcTo(bx + bw / 2, by + bh / 2, bx - bw / 2, by + bh / 2, r);
+    ctx.arcTo(bx - bw / 2, by + bh / 2, bx - bw / 2, by - bh / 2, r);
+    ctx.arcTo(bx - bw / 2, by - bh / 2, bx + bw / 2, by - bh / 2, r);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = '#D8D2C4';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.fillStyle = '#2C2C2A';
+    ctx.font = 'bold 44px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('返回', bx, by + 2);
+  }
+
+  var CASES = [
+    { title: '满榜 + 我在第 10 名', rows: mkRows(9, { self: { score: 79.2, level: 8 } }) },
+    { title: '3 人（短榜）', rows: mkRows(3, { self: { score: 94.8, level: 11 } }) },
+    { title: '只有 1 人', rows: mkRows(1) },
+    { title: '空榜', rows: [], extra: { emptyText: '还没有好友在玩' } },
+    { title: '我未上榜', rows: mkRows(4), extra: { selfScore: 77.7 } }
+  ];
+
+  var row = document.getElementById('row');
+  CASES.forEach(function (c) {
+    var fig = document.createElement('figure');
+    var box = document.createElement('div');
+    box.className = 'phone';
+    var cv = document.createElement('canvas');
+    box.appendChild(cv);
+    fig.appendChild(box);
+    var cap = document.createElement('figcaption');
+    cap.textContent = c.title;
+    fig.appendChild(cap);
+    row.appendChild(fig);
+    drawPage(cv, c.rows, c.extra);
+  });
+})();
+</script>
+</body>
+</html>

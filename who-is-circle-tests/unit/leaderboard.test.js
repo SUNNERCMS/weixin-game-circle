@@ -139,13 +139,14 @@ ok(typeof G.rankPanelLayout === 'function', 'game.js 导出 rankPanelLayout');
 ok(typeof G.resendShowOnShow === 'function', 'game.js 导出 resendShowOnShow');
 
 {
+  // 榜面现在是**整屏页**（不是"遮罩 + 浮空卡片"）：共享画布就是屏幕，整屏都画上。
   const L = G.rankPanelLayout();
-  ok(L.content && L.content.x === 25 && L.content.y === 210 && L.content.w === 700 && L.content.h === 1180,
-    '内容矩形 = (25,210,700,1180)', L.content ? JSON.stringify(L.content) : '(无)');
-  ok(L.title && L.title.y < L.content.y, '标题在内容矩形上方');
-  ok(L.backBtn && (L.backBtn.y - L.backBtn.h / 2) > (L.content.y + L.content.h),
-    '底部「返回」按钮不与内容矩形重叠');
-  ok(L.backBtn && (L.backBtn.y + L.backBtn.h / 2) <= 1624, '底部按钮在屏幕内');
+  ok(!L.content, '**没有内容矩形**了（整屏页不需要）');
+  ok(L.pageTitle && L.pageTitle.x === 40 && L.pageTitle.y === 200,
+    '页标题在左上（避开右上角微信胶囊）', L.pageTitle ? JSON.stringify(L.pageTitle) : '(无)');
+  ok(L.backBtn && L.backBtn.y + L.backBtn.h / 2 <= 1624, '底部按钮在屏幕内');
+  ok(L.backBtn && L.backBtn.y - L.backBtn.h / 2 > 1400,
+    '返回按钮在「我的成绩」那行之下（不压字）');
   ok(G.CFG.RANK_BTN && G.CFG.RANK_BTN.w >= 88 && G.CFG.RANK_BTN.h >= 88,
     '首页入口按钮热区 ≥ 88×88', G.CFG.RANK_BTN ? (G.CFG.RANK_BTN.w + '×' + G.CFG.RANK_BTN.h) : '(无)');
 }
@@ -195,7 +196,8 @@ function resetState() {
       '向开放域发了 showLeaderboard', rec.messages.length + ' 条');
     ok(rec.messages[0].rankNames && rec.messages[0].rankNames.length === 13, '消息里带了段位名表');
     ok(rec.messages[0].style && rec.messages[0].style.rowH === 96, '消息里带了样式参数');
-    ok(rec.messages[0].width === 700 && rec.messages[0].height === 1180, '内容矩形尺寸带上了');
+    ok(rec.messages[0].width === 750 && rec.messages[0].height === 1624,
+    '整屏页尺寸 = 设计网格（750×1624）', rec.messages[0].width + '×' + rec.messages[0].height);
     ok(rec.messages[0].key === 'circle', '托管数据 key 带上了', rec.messages[0].key);
   }
   {

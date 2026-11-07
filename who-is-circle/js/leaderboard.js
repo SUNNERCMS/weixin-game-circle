@@ -102,8 +102,6 @@
       canvasW: (typeof o.canvasW === 'number' && o.canvasW > 0) ? o.canvasW : DEFAULT_CANVAS_W,
       canvasH: (typeof o.canvasH === 'number' && o.canvasH > 0) ? o.canvasH : DEFAULT_CANVAS_H,
       designScale: (typeof o.designScale === 'number' && o.designScale > 0) ? o.designScale : DEFAULT_SCALE,
-      rectX: (typeof o.rectX === 'number') ? o.rectX : 0,
-      rectY: (typeof o.rectY === 'number') ? o.rectY : 0,
       rankNames: names.slice(),
       style: style
     };

@@ -248,10 +248,9 @@
 
     // 卡片画在主域指定的内容矩形里，垂直居中。
     // ⚠️ setTransform(a,b,c,d,e,f)：**e = X 平移，f = Y 平移**，且平移量用**逻辑px**。
-    var rectX = (typeof msg.rectX === 'number') ? msg.rectX : 25;
-    var rectY = (typeof msg.rectY === 'number') ? msg.rectY : 210;
-    var cardX = rectX;
-    var cardY = rectY + Math.max(0, (height - boardH) / 2);
+    // 整屏页：卡片就是整页（原点 0,0）—— 共享画布 = 屏幕，原点就是屏幕左上角。
+    var cardX = 0;
+    var cardY = 0;
     function useCardTransform() {
       try {
         ctx.setTransform(scale, 0, 0, scale, cardX * scale, cardY * scale);
@@ -287,6 +286,8 @@
       width: width,
       height: height,
       boardH: boardH,
+      page: true,          // 整屏页（共享画布就是屏幕 → 整屏都画上，每个像素都用上）
+      pageH: Math.round(realH / scale),   // 屏幕的设计高度
       style: msg.style,
       rankNames: msg.rankNames || [],
       avatarImages: state.avatars,
