@@ -70,7 +70,7 @@
 | 端到端云端对拍 | `cd ../who-is-circle-tests && npm run verify:cloud` | CloudBase CLI（`tcb`）+ 已部署的 `score` | 4 档笔迹经**真实云函数**算出的分与客户端分之差 ≤ 0.1（走干跑通道，不落库、不污染榜单） |
 | 榜面纯逻辑 | `cd ../who-is-circle-tests && npm run test:board` | 无（纯 Node，假 ctx） | 托管数据解析（`v` 缺失/负分/非法 JSON）、去重（同 openid / 与自己原文相同）、排序与名次连续、按测量宽度截断、样式参数钳制、绘制（名次/高亮/「未完全验证」角标/头像兜底/0 人空态/底部那行） |
 | 榜单桥接 | `cd ../who-is-circle-tests && npm run test:leaderboard` | 无（纯 Node） | 主域消息组装（样式参数与设计文档逐项对齐、段位名表带过去、缺参数不抛）、隐私设置三态、`game.js` 榜面接线（门禁三态、关闭、`onShow` 补发） |
-| 端到端 | `cd ../who-is-circle-tests && npm run test:e2e` | 开发者工具预览服务 + `agent-browser` + Pillow | 笔迹单色（无彩色分段）、结算按钮、新纪录徽章、**结算卡片无诊断红字**、落笔重画清屏、首页按钮 |
+| 端到端 | `cd ../who-is-circle-tests && npm run test:e2e` | 预览服务 + `agent-browser` + Pillow（预览服务用 MCP 的 `run_game` 起，返回 `http://localhost:3847`；**绑 IPv6**，要用 `localhost` 而不是 `127.0.0.1`） | 笔迹单色（无彩色分段）、结算按钮、新纪录徽章、**结算卡片无诊断红字**、落笔重画清屏、首页按钮 |
 | 语法 | `node --check game.js` | 无 | 语法检查 |
 
 单元测试退出码非 0 即失败，可直接接 CI。
