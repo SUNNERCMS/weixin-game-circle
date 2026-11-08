@@ -177,5 +177,58 @@ console.log('\n========== 六、低分也等云端结论（源码级守卫） ==
     '云端结论被记进 state（榜面文案要用）');
 }
 
+console.log('\n========== 七、结论晚到时修正本地最佳分 ==========');
+
+{
+  // 结算页等云端结论有**上限**（1 秒）——云端慢也不能把界面冻住。
+  // 超时后本地最佳分「乐观落定」；云端的结论晚到时再修正它。
+  //
+  // 场景：本地 78.3 已落定为最佳分 ⇒ 云端晚来说「这局无效」⇒ 最佳分要作废。
+  reset(90);
+  const res = mkRes({ score: 78.3, localScore: 78.3 });
+  G.state.result = res;
+  G.state.best = 78.3;          // 已落定（乐观）
+  G.state.bestPending = null;   // 已经落定过了
+  G.onCloudSettled(res, { status: 'shadow', verdict: 'shadow', score: 78.3,
+    reason: '存在行为异常，成绩不计入最佳' });
+  ok(G.state.best === null, '云端晚判无效 → 本地最佳分**作废**', String(G.state.best));
+}
+
+{
+  // 场景：本地 78.3 已落定 ⇒ 云端晚来说「ok，但云端算的 78.25」⇒ 对齐成云端分。
+  reset(90);
+  const res = mkRes({ score: 78.3, localScore: 78.3 });
+  G.state.result = res;
+  G.state.best = 78.3;
+  G.state.bestPending = null;
+  G.onCloudSettled(res, { status: 'ok', verdict: 'ok', score: 78.25, cloudScore: 78.25,
+    best: 78.25, level: 9 });
+  ok(Math.abs(G.state.best - 78.25) < 0.001,
+    '云端晚到且分数略有出入 → 本地最佳分**对齐成云端分**', String(G.state.best));
+}
+
+{
+  // 差值太大（>0.15）⇒ 不对齐（本地重算对不上，改了会破坏存档自校验）
+  reset(90);
+  const res = mkRes({ score: 78.3, localScore: 78.3 });
+  G.state.result = res;
+  G.state.best = 78.3;
+  G.state.bestPending = null;
+  G.onCloudSettled(res, { status: 'ok', verdict: 'ok', score: 70.0, cloudScore: 70.0,
+    best: 70.0, level: 7 });
+  ok(G.state.best === 78.3, '云端分差太多 → 不动本地最佳分（保住存档自校验）', String(G.state.best));
+}
+
+{
+  // 结算页的等待上限必须存在（否则云端慢会冻住界面）
+  const fs2 = require('fs');
+  const path3 = require('path');
+  const raw = fs2.readFileSync(path3.join(__dirname, '../../who-is-circle/game.js'), 'utf8');
+  ok(/CLOUD_SETTLE_WAIT_MS\s*:\s*\d+/.test(raw), '结算页有「等云端结论」的时间上限');
+  ok(/CLOUD_SETTLE_WAIT_MS:\s*(\d+)/.test(raw) && Number(/CLOUD_SETTLE_WAIT_MS:\s*(\d+)/.exec(raw)[1]) <= 2000,
+    '上限 ≤ 2 秒（界面不能久等）',
+    (/CLOUD_SETTLE_WAIT_MS:\s*(\d+)/.exec(raw) || [])[1]);
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
 process.exit(fail ? 1 : 0);

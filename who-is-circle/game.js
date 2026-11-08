@@ -97,6 +97,12 @@
     BTN_HIT_PAD: 24,     // 按钮热区外扩，保证 ≥88×88
     ICON_BTN_R: 48,      // 顶栏图标热区半径（96×96 设计px，满足触摸标准）
     ICON_SIZE: 40,       // 图标视觉直径
+    // 结算页等云端结论的**上限**（毫秒）
+    //
+    // 为什么要有上限：结算页是玩家正在看的界面，**不能因为云端慢而冻住**。
+    // 云端正常 ~300ms 就回 ⇒ 1 秒足够；超过就按「服务不可达」处理（乐观落定），
+    // 云端的结论稍后再来修正本地最佳分。
+    CLOUD_SETTLE_WAIT_MS: 1000,
     // 开发期诊断浮层：把共享画布的关键数字画在屏幕上（排查分辨率时用）
     // 查完已关掉；要再查就改成 true。
     DEBUG_OVERLAY: false,
@@ -820,6 +826,11 @@
     env.setStorageRaw('best_rec', JSON.stringify(rec));
   }
 
+  // 作废本地最佳分存档（云端判这一局无效时用）
+  function clearBestRecord() {
+    try { env.setStorageRaw('best_rec', ''); } catch (e) { /* ignore */ }
+  }
+
   function loadBestRecord() {
     try {
       var s = env.getStorageRaw('best_rec');
@@ -1169,7 +1180,7 @@
           state.bestPending.cloudPending = false;
           odLog('云端结论超时 → 解除等待（最佳分照常落定）');
         }
-      }, CFG.CLOUD_TIMEOUT_MS + 2000);
+      }, CFG.CLOUD_SETTLE_WAIT_MS);
       // 最佳分的落定也要等云端 —— 结算页被关掉了也不能让本地最佳分比榜上虚高
       if (state.bestPending) state.bestPending.cloudPending = res.cloudPending;
       cloud.submitIfRecord({
@@ -1223,6 +1234,16 @@
       if (state.bestPending && state.bestPending.pts === res.pts) {
         state.bestPending.score = cs;
         state.bestPending.cloudPending = false;
+      } else {
+        // 结论晚到（最佳分已乐观落定）→ 把分对齐成云端分。
+        // ⚠️ 比对要用**本地原始分**（res.localScore）——
+        //    res.score 在这里已经被云端分覆盖过了，拿它比永远不相等。
+        // 差值 ≤0.15：本地重算与云端算分一致，改了不影响存档的自校验。
+        var localScore = (typeof res.localScore === 'number') ? res.localScore : res.score;
+        if (state.best === localScore && Math.abs(cs - localScore) <= 0.15) {
+          state.best = cs;
+          try { saveBestRecord(cs, state.result && state.result.pts); } catch (e) { /* ignore */ }
+        }
       }
       return;
     }
@@ -1232,6 +1253,14 @@
         res.cloudPending = false;
         if (state.bestPending && state.bestPending.pts === res.pts) {
           state.bestPending = null;   // 云端判无效 → 本地最佳分不动
+        } else if (state.best === ((typeof res.localScore === 'number') ? res.localScore : res.score)) {
+          // ⚠️ **结论晚到了**（超过了结算页的等待上限，最佳分已乐观落定）
+          // ⇒ 这一局云端不认 ⇒ 本地最佳分要作废。
+          // 存档是「分数 + 笔迹 + 校验和」自校验的，改分数会破坏校验 ⇒
+          // 只能整条作废（这一局的分本来就不该算数）。
+          state.best = null;
+          clearBestRecord();
+          odLog('云端判无效（结论晚到）→ 本地最佳分已作废');
         }
         return;
       }
