@@ -107,6 +107,21 @@ section('三、buildShowMessage —— 组装给开放域的消息');
     'rankNames 不共享引用（免得被改）');
 }
 
+section('三之二、selfRaw —— 认「我」的兜底判据');
+
+{
+  // 真机现象（2026-11-08）：榜上有我的 78.3，底部却写「未上榜」。
+  // 根因：openid 与自读**同时**拿不到 ⇒ 主域得把自己写出去的托管数据原文发过去。
+  const raw = '{"wxgame":{"score":783,"update_time":1780000000},"level":9,"v":"ok"}';
+  const msg = LB.buildShowMessage({ selfRaw: raw });
+  ok(msg.selfRaw === raw, 'selfRaw 带上了（开放域靠它认「我」）', msg.selfRaw);
+}
+
+{
+  const msg = LB.buildShowMessage();
+  ok(msg.selfRaw === '', '缺 selfRaw → 空串（开放域跳过这条认领路径）', JSON.stringify(msg.selfRaw));
+}
+
 section('四、buildHideMessage');
 
 {

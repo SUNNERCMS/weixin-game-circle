@@ -100,6 +100,13 @@
       // 最近一局的云端结论（榜面用来说明「本地最高分为什么没上榜」）
       lastVerdict: (typeof o.lastVerdict === 'string') ? o.lastVerdict : '',
       lastReason: (typeof o.lastReason === 'string') ? o.lastReason : '',
+      // **主域自己写出去的托管数据原文** —— 开放域认不出「我」时的兜底。
+      //
+      // 为什么需要：开放域认「我」有三条路 —— openid（getUserInfo，可能失败）、
+      // 自读（getUserCloudStorage，可能返回空）、托管数据原文（主域给）。
+      // 前两条在真机上**同时失败**过（截图：榜上 78.3，底部却说「未上榜」），
+      // 第三条是最后一道防线：原文完全相同 ⇒ 好友列表里那一行就是我。
+      selfRaw: (typeof o.selfRaw === 'string') ? o.selfRaw : '',
       // 共享画布只能是屏幕大小（逻辑px）—— 平台不接受别的尺寸。
       // 真机实测：请求 700×scale，平台给的是屏幕逻辑尺寸。
       canvasW: (typeof o.canvasW === 'number' && o.canvasW > 0) ? o.canvasW : DEFAULT_CANVAS_W,

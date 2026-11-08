@@ -171,10 +171,17 @@
     // 为什么记：托管数据只能由客户端写（云端没有写它的接口），
     // 而主域**读不到**自己的托管数据（getUserCloudStorage 只能在开放数据域调），
     // 所以客户端只能靠自己记 —— 否则「云端有分、托管没有」这种情况无法发现、无法修复。
-    function rememberHosting(score, level, verdict) {
+    function rememberHosting(score, level, verdict, raw) {
       try {
         storage.set(HOSTING_KEY, JSON.stringify({
-          score: score, level: level, verdict: verdict || 'ok', at: now()
+          score: score, level: level, verdict: verdict || 'ok', at: now(),
+          // **托管数据原文**（就是写进云存储的那串 JSON）。
+          //
+          // 为什么记它：开放数据域认「我」有三条路（openid / 托管数据原文 / 自读），
+          // 其中 openid 与自读都可能同时拿不到（真机上都发生过）。
+          // 主域知道自己写出去的那串原文 ⇒ 发给开放域当兜底，
+          // 开放域靠**原文完全相同**认出好友列表里的自己。
+          raw: (typeof raw === 'string') ? raw : ''
         }));
       } catch (e) { /* 记不住也不影响主流程 */ }
     }
@@ -199,7 +206,8 @@
             (verdict === 'unverified' ? '（未完全验证）' : ''));
         // 记住写到多少分 —— 对账时用来判断「托管数据落后没有」。
         // 放在这里而不是调用方：**任何**写入路径都会记（正常上报 / 补传 / 对账补写）。
-        rememberHosting(score, level, verdict);
+        // 连原文一起记 —— 开放域认「我」时的兜底判据（见 rememberHosting）。
+        rememberHosting(score, level, verdict, value);
         return true;
       }, function (e) {
         log('[cloud] 托管数据写入失败 key=' + key + ' err=' + msg(e));

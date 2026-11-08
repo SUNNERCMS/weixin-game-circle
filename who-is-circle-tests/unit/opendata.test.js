@@ -557,6 +557,98 @@ const RN10 = ['灾难现场', '一团面条', '土豆', '饺子', '鸡蛋', '甜
     ts.filter(t => t.indexOf('历史最高') >= 0).join('|') || '(没画)');
 }
 
+section('十一、认出「我」的最后一道防线：托管数据原文（真机：openid 与自读同时失败）');
+
+{
+  // 真机现象（2026-11-08 截图）：榜上**能看到自己**（Sun 78.3 排第 2），
+  // 底部却写「本地最高 78.3 · 暂未上榜」—— 同一个分，一边在榜上一边说没上榜。
+  // 诊断行是「自读0 … 我在否 id无」⇒ openid 与自读**同时**失败。
+  //
+  // 修法：主域知道自己写进云存储的那串原文 ⇒ 发给开放域 ⇒
+  //       开放域靠「原文完全相同」认出好友列表里的自己（最后一道防线）。
+  const MY_RAW = hosting(78.3, 9);
+  const fake = makeFakeWx({
+    friends: [friendEntry('o_1', 'Lion', 82.7, 10), friendEntry('o_me', 'Sun', 78.3, 9)],
+    userInfoFail: true,      // ① 拿不到自己的 openid
+    selfFail: true,          // ② 自读也失败
+  });
+  global.wx = fake;
+  delete require.cache[require.resolve('../../who-is-circle/open-data/index.js')];
+  const OD = require('../../who-is-circle/open-data/index.js');
+  OD.handleMessage({ type: 'showLeaderboard', key: 'circle', width: 750, height: 1624, scale: 2,
+    rankNames: RN10, style: {}, selfRaw: MY_RAW, selfScore: 78.3, debug: true }, fake);
+  await new Promise((r) => setTimeout(r, 60));
+
+  const ts = odTexts(fake.ctx);
+  ok(ts.indexOf('我') >= 0, '靠原文认出了「我」（那一行画的是「我」而不是昵称 Sun）',
+    ts.filter(t => t === '我' || t.indexOf('历史最高') >= 0).join('|') || '(没画)');
+  ok(ts.some(t => t.indexOf('我的历史最高') >= 0),
+    '底部是「我的历史最高 · 第 N 名」，不再是「未上榜」',
+    ts.filter(t => t.indexOf('历史最高') >= 0).join('|') || '(没画)');
+  ok(ts.every(t => t.indexOf('暂未上榜') < 0), '**不再显示「暂未上榜」**');
+  ok(ts.some(t => t.indexOf('1 位好友在玩') >= 0),
+    '好友数把自己算掉了（榜上 2 行 → 1 位好友）',
+    ts.filter(t => t.indexOf('位好友在玩') >= 0).join('|') || '(没画)');
+  ok(ts.some(t => t.indexOf('Sun') < 0), '自己的那一行不再用昵称显示');
+}
+
+{
+  // 原文**对不上**时不能乱认 —— 认错人比认不出更糟
+  //（会把某个好友标成「我」，然后把真人的成绩从榜上抹掉）。
+  const fake = makeFakeWx({
+    friends: [friendEntry('o_1', 'Lion', 82.7, 10)],
+    userInfoFail: true,
+    selfFail: true,
+  });
+  global.wx = fake;
+  delete require.cache[require.resolve('../../who-is-circle/open-data/index.js')];
+  const OD = require('../../who-is-circle/open-data/index.js');
+  OD.handleMessage({ type: 'showLeaderboard', key: 'circle', width: 750, height: 1624, scale: 2,
+    rankNames: RN10, style: {}, selfRaw: hosting(78.3, 9), selfScore: 78.3, debug: true }, fake);
+  await new Promise((r) => setTimeout(r, 60));
+
+  const ts = odTexts(fake.ctx);
+  ok(ts.indexOf('我') < 0, '原文对不上 → **不乱认人**', ts.join('|').slice(0, 80));
+  ok(ts.some(t => t.indexOf('Lion') >= 0), '好友照常显示');
+}
+
+section('十二、诊断行必须描述「最终画出来的那份数据」');
+
+{
+  // 真机截图里出现过「榜上 2 行、诊断写好友0」—— 因为诊断在 pull() 内部写死，
+  // 而**缓存回退路径**会把 rows 换成缓存那份，诊断却还留着旧的。
+  //
+  // 这里模拟：第一次拉成功（2 行）→ 关系链接口限流失败 → 第二次回退到缓存。
+  const fake = makeFakeWx({
+    friends: [friendEntry('o_1', 'Lion', 82.7, 10), friendEntry('o_2', '小红', 92.4, 9)],
+    self: [{ KVDataList: [{ key: 'circle', value: hosting(88, 9) }] }]
+  });
+  global.wx = fake;
+  delete require.cache[require.resolve('../../who-is-circle/open-data/index.js')];
+  const OD = require('../../who-is-circle/open-data/index.js');
+  const msg = { type: 'showLeaderboard', key: 'circle', width: 750, height: 1624, scale: 2,
+    rankNames: RN10, style: {}, selfScore: 88, debug: true };
+  OD.handleMessage(msg, fake);
+  await new Promise((r) => setTimeout(r, 60));
+
+  // 现在让关系链接口开始失败（限流）
+  fake.getFriendCloudStorage = function (o) {
+    fake.calls.friend++;
+    if (o.fail) o.fail({ errMsg: 'getFriendCloudStorage:fail' });
+  };
+  // 缓存 TTL 内 + 自己分数没变 → 走「缓存还新鲜」这条路（根本不调接口）
+  OD.handleMessage(msg, fake);
+  await new Promise((r) => setTimeout(r, 60));
+
+  const ts = odTexts(fake.ctx);
+  const diag = ts.filter(t => t.indexOf('自读') >= 0).pop() || '';
+  const shown = ts.filter(t => t.indexOf('位好友在玩') >= 0).pop() || '';
+  ok(diag.indexOf('好友2') >= 0,
+    '**诊断里的好友数与榜面一致**（不该再出现「榜上 2 行、诊断写好友0」）', diag);
+  ok(diag.indexOf('缓存') >= 0, '诊断标明这批数据来自缓存', diag);
+  ok(shown.indexOf('2 位好友在玩') >= 0, '榜面还是 2 位好友', shown);
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
   process.exit(fail ? 1 : 0);
 })();

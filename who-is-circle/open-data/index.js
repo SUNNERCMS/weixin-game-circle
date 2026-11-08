@@ -124,7 +124,7 @@
   //   · 拉取失败但有缓存 → **回退到缓存**（有旧数据总比"读不到"好）
   //
   // 缓存 20 秒：足够覆盖"返回→再打开"，又短到不会让自己的分数显得过时。
-  var cache = { rows: [], at: 0, selfScore: null };
+  var cache = { rows: [], at: 0, selfScore: null, diag: '' };
   var CACHE_TTL = 20000;
 
   function handleMessage(msg) {
@@ -144,6 +144,9 @@
         // 缓存还新鲜 → 直接用，**不重复调关系链接口**（它有调用频率限制）
         state.rows = cache.rows;
         state.loading = false;
+        // ⚠️ 诊断也要跟着换 —— 否则会留着上一次的诊断，
+        //    出现「榜上 2 行、诊断写好友0」这种自相矛盾（真机截图里出现过）。
+        state.diag = (cache.diag || '') + ' 缓存';
         renderNow();
         return;
       }
@@ -151,28 +154,35 @@
       state.loading = true;
       // 头像不清：avatarUrl 是稳定的，复用已加载的图，省一次网络请求
       renderNow();
-      pull(getWx(), msg.key || 'circle').then(function (res) {
+      pull(getWx(), msg.key || 'circle', msg.selfRaw || '').then(function (res) {
         var rows = res.rows || [];
         var err = res.error || '';
+        var diag = res.diag || '';
         if (err && cache.rows.length) {
           // 拉取失败但有缓存 → 回退到缓存（比"读不到"好得多）
           odLog('拉取失败，回退到缓存：' + err);
           rows = cache.rows;
           err = '';
+          // 诊断换成缓存那份 —— 诊断必须描述**最终画出来的那份数据**
+          diag = (cache.diag || '') + ' 回退缓存';
         }
         state.rows = rows;
         state.error = err;
+        // ⚠️ 数据定稿之后才写诊断（见 buildDiag 的注释）
+        state.diag = diag;
         state.loading = false;
         if (!err && rows.length) {
           cache.rows = rows;
           cache.at = now;
           cache.selfScore = selfScore;
+          cache.diag = diag;
         }
         renderNow();
         loadAvatars(getWx(), state.rows);
       }, function () {
         state.rows = cache.rows || [];
         state.error = state.rows.length ? '' : '读不到好友数据';
+        state.diag = (cache.diag || '') + ' 回退缓存';
         state.loading = false;
         renderNow();
       });
@@ -188,12 +198,17 @@
   /**
    * 拉好友数据 + 自己的数据 → 归一化 → 排序。
    * 好友失败不牵连自己，自己失败不牵连好友（各自独立兜底）。
-   * @returns {Promise<{rows: Array, error: string}>}
+   *
+   * @param {object} wxApi    wx API
+   * @param {string} key      托管数据的 key
+   * @param {string} selfRaw  **主域自己写出去的托管数据原文**（认「我」的兜底判据）
+   * @returns {Promise<{rows: Array, error: string, diag: string}>}
    */
-  function pull(wxApi, key) {
+  function pull(wxApi, key, selfRaw) {
     var w = wxApi || getWx();
     var k = key || 'circle';
-    if (!w) return Promise.resolve({ rows: [], error: '没有微信环境' });
+    var myRaw = (typeof selfRaw === 'string') ? selfRaw : '';
+    if (!w) return Promise.resolve({ rows: [], error: '没有微信环境', diag: '无微信环境' });
 
     var friendsP = new Promise(function (resolve) {
       if (typeof w.getFriendCloudStorage !== 'function') { resolve([]); return; }
@@ -232,37 +247,95 @@
       var selfData = pair[1];
       var error = (friendData === null) ? '读不到好友数据' : '';
 
+      // ---- 认「我」：三条路，前两条断了还有第三条 ----
+      //
+      //   ① openid 相等      （getUserInfo 拿 openId —— 可能失败）
+      //   ② 托管数据原文相等 （主域知道自己写出去的那串 JSON —— 最稳的兜底）
+      //   ③ 自读             （getUserCloudStorage —— 可能返回空）
+      //
+      // 真机上 ① 和 ③ **同时失败**过（截图：榜上有我的 78.3，底部却说「未上榜」），
+      // 所以 ② 必须留着 —— 它是最后一道防线。
       var rows = [];
       var list = friendData || [];
-      var selfInFriends = false;
+      var selfByOpenid = null;
+      var selfByRaw = null;
+      var claimedBy = '';
       for (var i = 0; i < list.length; i++) {
         var row = Board ? Board.normalizeFriendEntry(list[i], k) : null;
         if (!row) continue;           // 解析不出来 → 跳过，不占名次
-        // 好友列表里遇到自己 → 标上 isSelf
-        // （自读失败时，这一行就是「我」的唯一证据）
-        if (myOpenid && row.openid === myOpenid) {
+        // ① 好友列表里遇到自己（openid 相等）→ 摘出去，下面统一当 selfRow 处理
+        if (!selfByOpenid && myOpenid && row.openid === myOpenid) {
           row.isSelf = true;
-          selfInFriends = true;
+          selfByOpenid = row;
+          claimedBy = 'openid';
+          continue;
         }
         rows.push(row);
       }
-      odLog('好友 ' + rows.length + ' 行（自己' + (selfInFriends ? '在列表里' : '不在列表里') +
-            '），自读 ' + ((selfData && selfData.length) ? selfData.length + ' 行' : '空'));
-      // 诊断信息**画在榜面上**（不是只进日志）——
-      // 没有真机调试时日志看不到，但截图能看（2026-11-07 的教训：每次都靠日志才能定案太慢）。
-      state.diag = '自读' + ((selfData && selfData.length) ? selfData.length : 0) +
-                   ' 好友' + rows.length +
-                   ' 我在' + (selfInFriends ? '是' : '否') +
-                   ' id' + (myOpenid ? '有' : '无');
+      // ② 兜底：openid 认不出时，用**托管数据原文**认
+      //    （主域写出去的那串 JSON 与好友列表里我那一行的原文完全相同）
+      if (!selfByOpenid && myRaw) {
+        for (var m = 0; m < rows.length; m++) {
+          if (rows[m].raw && rows[m].raw === myRaw) {
+            rows[m].isSelf = true;
+            selfByRaw = rows[m];
+            rows.splice(m, 1);
+            claimedBy = '原文';
+            break;
+          }
+        }
+      }
+
+      // ③ 自读自己的那一行
       var selfRow = null;
       var sList = selfData || [];
       for (var j = 0; j < sList.length; j++) {
         var sr = Board ? Board.normalizeSelfEntry(sList[j], k) : null;
         if (sr) { selfRow = sr; break; }
       }
+      if (!selfRow) {
+        // 自读失败 → 用好友列表里认出的那一行（自读失败时，它就是「我」的唯一证据）
+        if (selfByOpenid) { selfRow = selfByOpenid; }
+        else if (selfByRaw) { selfRow = selfByRaw; }
+        else { claimedBy = claimedBy || '不出'; }
+      }
+      if (selfRow && !claimedBy) claimedBy = '自读';
+
+      var inFriends = !!(selfByOpenid || selfByRaw);
+      odLog('好友 ' + rows.length + ' 行（自己' + (inFriends ? '在列表里' : '不在列表里') +
+            '），自读 ' + ((selfData && selfData.length) ? selfData.length + ' 行' : '空') +
+            '，认领方式 ' + claimedBy);
+
       var merged = Board ? Board.mergeRows(rows, selfRow) : [];
-      return { rows: merged, error: error };
+      // 诊断信息**画在榜面上**（不是只进日志）——
+      // 没有真机调试时日志看不到，但截图能看（2026-11-07 的教训：每次都靠日志才能定案太慢）。
+      //
+      // ⚠️ 它必须描述**最终画出来的那份数据**，所以由调用方在数据定稿后再写进 state.diag
+      //    （缓存回退路径会换掉 rows —— 之前就是在这里写死的，
+      //      结果出现「榜上 2 行、诊断写好友0」的自相矛盾）。
+      var diag = buildDiag(selfData, rows.length, inFriends, claimedBy, myOpenid);
+      return { rows: merged, error: error, diag: diag };
     });
+  }
+
+  /**
+   * 拼一行诊断信息。
+   *
+   * 字段：
+   *   自读✗/0/1  读自己的托管数据：✗=失败，0=空，1=有
+   *   好友N      好友数（不含我）
+   *   我是✓/✗   在好友列表里认出自己了没有
+   *   认openid/原文/自读/不出  靠哪条路认出的
+   *   id有/无    拿到自己的 openId 没有
+   */
+  function buildDiag(selfData, friendCount, inFriends, claimedBy, hasOpenid) {
+    var selfTxt = (selfData === null) ? '✗'
+                : ((selfData && selfData.length) ? String(selfData.length) : '0');
+    return '自读' + selfTxt +
+           ' 好友' + friendCount +
+           ' 我是' + (inFriends ? '✓' : '✗') +
+           ' 认' + (claimedBy || '不出') +
+           ' id' + (hasOpenid ? '有' : '无');
   }
 
   /** 加载好友头像（失败就不画图，走兜底色块 + 首字） */

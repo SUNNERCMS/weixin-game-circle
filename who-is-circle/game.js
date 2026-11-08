@@ -971,10 +971,19 @@
       level = RANKS.indexOf(rk.rank);
       if (level < 0) level = null;
     }
+    // 托管数据原文 —— 开放域认「我」的最后一道防线。
+    // 主域知道自己写进云存储的那串 JSON（js/cloud.js 的 rememberHosting 记着），
+    // 开放域拿它跟好友列表里的托管数据原文比对 ⇒ 认得出哪一行是自己。
+    var selfRaw = '';
+    if (cloud && cloud.enabled) {
+      var h = cloud.recallHosting();
+      if (h && typeof h.raw === 'string') selfRaw = h.raw;
+    }
     return LeaderboardBridge.buildShowMessage({
       key: CFG.CLOUD_KEY,
       selfScore: best,
       selfLevel: level,
+      selfRaw: selfRaw,
       width: CFG.DESIGN_W,        // 整屏页 = 设计网格整屏
       height: CFG.DESIGN_H,
       // ⚠️ 这里传的是**主域的物理像素/设计像素**比例（view.scale ≈ 1.56），
