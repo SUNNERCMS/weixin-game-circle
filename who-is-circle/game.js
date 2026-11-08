@@ -106,8 +106,15 @@
     // 开发期诊断浮层：把共享画布的关键数字画在屏幕上（排查分辨率时用）
     // 查完已关掉；要再查就改成 true。
     DEBUG_OVERLAY: false,
-    // 榜面页底部的诊断行（云端链路状态）—— 没有真机调试时靠截图定位
-    RANK_DEBUG: true,
+    // **诊断总开关**（主域与开放数据域一起听它的）
+    //
+    // true  → 榜面底部画开放域诊断行（自读/好友/认出我）+ 主域画 [cloud] 诊断行
+    // false → 正式版什么都不画
+    //
+    // 为什么统一成一个：之前是主域 RANK_DEBUG、开放域 DEBUG_OVERLAY 各开各的，
+    // 正式版漏掉一处就会把调试行印在玩家脸上（真机截图里出现过两行）。
+    // ⚠️ 上线前确认它是 false。
+    DEBUG: false,
     // P1：开放数据域占位内容在首页的贴图矩形（左上角 + 尺寸，设计px）
     // P4 起首页这块位置改成「好友排行」入口按钮（见 RANK_BTN）
     OD_PLACEHOLDER: { x: 125, y: 800, w: 500, h: 96 },
@@ -880,7 +887,8 @@
     rankPending: false,      // 好友榜：等玩家在设置页开完「向朋友公开」再回来
     lastVerdict: '',         // 最近一局的云端结论（榜面用来说明「为什么没上榜」）
     lastReason: '',
-    cloudDiag: '',           // 云端链路的诊断（画在榜面上，截图就能看）
+    cloudDiag: '',           // 托管链路的诊断（画在榜面上，截图就能看）
+    syncDiag: '',            // 对账链路的诊断（与托管分开 —— 两件事不该互相覆盖）
     result: null             // 结算数据（直接画在画布上，无浮层）
   };
 
@@ -984,6 +992,7 @@
       selfScore: best,
       selfLevel: level,
       selfRaw: selfRaw,
+      debug: CFG.DEBUG,
       width: CFG.DESIGN_W,        // 整屏页 = 设计网格整屏
       height: CFG.DESIGN_H,
       // ⚠️ 这里传的是**主域的物理像素/设计像素**比例（view.scale ≈ 1.56），
@@ -1284,6 +1293,31 @@
     // 服务不可达 → 不等云端了，按单机行为落定最佳分（只不上榜而已）
     if (state.bestPending && state.bestPending.pts === res.pts) {
       state.bestPending.cloudPending = false;
+    }
+  }
+
+  /**
+   * 对账结果 → 一行人话。
+   *
+   * 为什么不能都写成「无」：对账的失败长得完全不一样 ——
+   *   「不用补写」是**正常**（托管数据本来就比云端新），
+   *   「云端没给分」是**异常**（云端账本里没有有效成绩），
+   *   「云端不可达」是**网络问题**（对账失败不影响玩法，但要知道）。
+   * 三种都写成「无」的话，截图上根本看不出断在哪一环 —— 排查全靠猜。
+   */
+  function syncDiagText(client, best) {
+    var st = (client && typeof client.syncStatus === 'function') ? client.syncStatus() : null;
+    var status = (st && st.status) ? st.status : (best ? 'ok' : 'unknown');
+    var b = (st && typeof st.best === 'number') ? st.best
+          : (typeof best === 'number' ? best : null);
+    switch (status) {
+      case 'ok':       return '对账✓补写' + (b !== null ? b : '');
+      case 'noop':     return '对账=已同步';
+      case 'noBest':   return '对账✗云端无分';
+      case 'failed':   return '对账✗补写失败';
+      case 'unreachable': return '对账✗不可达';
+      case 'off':      return '对账-未开云';
+      default:         return '对账?' + status;
     }
   }
 
@@ -1637,12 +1671,17 @@
     }
     // 开发期诊断行：云端链路的最后一手（托管写入 / 对账）——
     // 没有真机调试时日志看不到，但截图能看。
-    if (CFG.RANK_DEBUG && state.cloudDiag) {
+    //
+    // ⚠️ 由 CFG.DEBUG 统一控制（正式版 false ⇒ 一行都不画）。
+    // 托管与对账是**两件独立的事**，分开记 —— 之前合成一个字段，
+    // 后来的会覆盖先来的，截图上就只剩半截信息。
+    var diag = [state.cloudDiag, state.syncDiag].filter(Boolean).join(' ');
+    if (CFG.DEBUG && diag) {
       c.fillStyle = COL.grayText;
       c.font = '20px monospace';
       c.textAlign = 'left';
       c.textBaseline = 'middle';
-      c.fillText('[cloud] ' + state.cloudDiag, 16, CFG.DESIGN_H - 18);
+      c.fillText('[cloud] ' + diag, 16, CFG.DESIGN_H - 18);
     }
     // 底部返回（主域画：触摸在这边处理）
     // 位置跟着榜面底部走，并**避开底部手势条**（iPhone 的 home indicator）
@@ -2062,7 +2101,7 @@
       var syncP = cloud.syncBest();
       if (syncP && typeof syncP.then === 'function') {
         syncP.then(function (best) {
-          state.cloudDiag += ' 对账' + (best ? '✓' + best : '无');
+          state.syncDiag = syncDiagText(cloud, best);
         }, function () { /* ignore */ });
       }
     } catch (e) { /* ignore */ }

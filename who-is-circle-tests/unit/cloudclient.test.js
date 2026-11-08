@@ -471,6 +471,100 @@ console.log('\n========== 九、对账（syncBest）：托管数据落后就补�
   ok(got === null, '云端不可达 → 对账安静失败', String(got));
 }
 
+console.log('\n========== 十、对账的三种结局要分得开（别都写成「无」） ==========');
+
+{
+  // 真机截图上只有一句没头没尾的「对账无」——
+  // 因为「不用补写」「云端没给分」「云端不可达」全都返回 null，光看返回值分不出来。
+  const mk = (callResult) => {
+    const env = makeDeps({ callResult });
+    return { env, c: Cloud.createClient(env.deps) };
+  };
+
+  // ① 补写成功
+  {
+    const { c } = mk(function (name, data) {
+      if (data && data.action === 'sync') {
+        return Promise.resolve({ result: { ok: true, sync: true, best: 76.3, level: 9, bestVerdict: 'ok' } });
+      }
+      return Promise.resolve({ result: { ok: true, verdict: 'ok' } });
+    });
+    await c.syncBest();
+    ok(c.syncStatus().status === 'ok', '补写成功 → status=ok', c.syncStatus().status);
+    ok(c.syncStatus().best === 76.3, '状态里带着云端权威分', String(c.syncStatus().best));
+  }
+
+  // ② 不用补写（本地记的托管分已经不落后）
+  {
+    const { c } = mk(function (name, data) {
+      if (data && data.action === 'sync') {
+        return Promise.resolve({ result: { ok: true, sync: true, best: 70, level: 8 } });
+      }
+      return Promise.resolve({ result: { ok: true, verdict: 'ok' } });
+    });
+    await c.reportHosting(80, 10, 'ok');
+    await c.syncBest();
+    ok(c.syncStatus().status === 'noop', '不用补写 → status=noop', c.syncStatus().status);
+  }
+
+  // ③ 云端没给有效分
+  {
+    const { c } = mk(function (name, data) {
+      if (data && data.action === 'sync') {
+        return Promise.resolve({ result: { ok: true, sync: true, best: 0 } });
+      }
+      return Promise.resolve({ result: { ok: true, verdict: 'ok' } });
+    });
+    await c.syncBest();
+    ok(c.syncStatus().status === 'noBest', '云端没给有效分 → status=noBest', c.syncStatus().status);
+  }
+
+  // ④ 云端不可达
+  {
+    const { c } = mk('reject');
+    await c.syncBest();
+    ok(c.syncStatus().status === 'unreachable', '云端不可达 → status=unreachable', c.syncStatus().status);
+  }
+
+  // ⑤ 没开云
+  {
+    const env = makeDeps({ callResult: 'reject' });
+    env.deps.callFunction = null;
+    const c = Cloud.createClient(env.deps);
+    await c.syncBest();
+    ok(c.syncStatus().status === 'off', '没开云 → status=off', c.syncStatus().status);
+  }
+}
+
+console.log('\n========== 十一、托管数据原文被记下来了（开放域认「我」的兜底判据） ==========');
+
+{
+  const env = makeDeps({
+    callResult: function (name, data) {
+      if (data && data.action === 'sync') {
+        return Promise.resolve({ result: { ok: true, sync: true, best: 76.3, level: 9, bestVerdict: 'ok' } });
+      }
+      return Promise.resolve({ result: { ok: true, verdict: 'ok' } });
+    }
+  });
+  const c = Cloud.createClient(env.deps);
+  await c.reportHosting(76.3, 9, 'ok');
+  await tick();
+
+  const rec = c.recallHosting();
+  ok(rec && typeof rec.raw === 'string' && rec.raw.length > 0,
+    '本地记住了托管数据的**原文**', rec ? rec.raw : '(没记)');
+
+  // 原文必须与**真正写进云存储的那一串**完全一致 —— 认「我」靠的就是逐字符相同
+  ok(rec && rec.raw === env.hosted[0].KVDataList[0].value,
+    '原文与写进云存储的内容**逐字符相同**（否则开放域认不出来）',
+    rec ? rec.raw : '(没记)');
+
+  const parsed = JSON.parse(rec.raw);
+  ok(parsed.wxgame.score === 763 && parsed.level === 9, '原文本身是合法的托管数据格式',
+    JSON.stringify(parsed));
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
   process.exit(fail ? 1 : 0);
 })().catch(e => {

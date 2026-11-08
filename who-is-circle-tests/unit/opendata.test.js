@@ -649,6 +649,26 @@ section('十二、诊断行必须描述「最终画出来的那份数据」');
   ok(shown.indexOf('2 位好友在玩') >= 0, '榜面还是 2 位好友', shown);
 }
 
+section('十三、诊断行由主域的总开关控制（正式版不画）');
+
+{
+  // 正式版：msg.debug 为 false ⇒ 榜面上**一行调试字都不该有**
+  const fake = makeFakeWx({
+    friends: [friendEntry('o_1', 'Lion', 82.7, 10)],
+    self: [{ KVDataList: [{ key: 'circle', value: hosting(88, 9) }] }]
+  });
+  global.wx = fake;
+  delete require.cache[require.resolve('../../who-is-circle/open-data/index.js')];
+  const OD = require('../../who-is-circle/open-data/index.js');
+  OD.handleMessage({ type: 'showLeaderboard', key: 'circle', width: 750, height: 1624, scale: 2,
+    rankNames: RN10, style: {}, selfScore: 88, debug: false }, fake);
+  await new Promise((r) => setTimeout(r, 60));
+
+  const ts = odTexts(fake.ctx);
+  ok(ts.every(t => t.indexOf('自读') < 0), '**debug=false → 不画诊断行**',
+    ts.filter(t => t.indexOf('自读') >= 0).join('|') || '(没画)');
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
   process.exit(fail ? 1 : 0);
 })();

@@ -107,6 +107,8 @@
       // 前两条在真机上**同时失败**过（截图：榜上 78.3，底部却说「未上榜」），
       // 第三条是最后一道防线：原文完全相同 ⇒ 好友列表里那一行就是我。
       selfRaw: (typeof o.selfRaw === 'string') ? o.selfRaw : '',
+      // 开发期诊断总开关（主域统一控制；开放域按它决定要不要画诊断行）
+      debug: !!o.debug,
       // 共享画布只能是屏幕大小（逻辑px）—— 平台不接受别的尺寸。
       // 真机实测：请求 700×scale，平台给的是屏幕逻辑尺寸。
       canvasW: (typeof o.canvasW === 'number' && o.canvasW > 0) ? o.canvasW : DEFAULT_CANVAS_W,

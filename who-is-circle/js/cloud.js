@@ -437,33 +437,43 @@
      *
      * 幂等：写进去的是云端权威 max，永远不会把托管数据写低 ✓
      * 免费：sync 模式不判定、不写 submissions、不计速率 ✓
+     *
+     * 返回值不变（补写成功给分数，否则 null）—— 但**过程状态**记在 lastSync 里，
+     * 因为「不用补写」「云端没给分」「云端不可达」三件事都返回 null，
+     * 光看返回值分不出来（真机截图上就只画了句没头没尾的「对账无」）。
      */
+    var lastSync = { status: '', best: null };
+
     function syncBest() {
-      if (!enabled) return Promise.resolve(null);
+      if (!enabled) { lastSync = { status: 'off', best: null }; return Promise.resolve(null); }
       var p;
       try {
         p = Promise.resolve(callFunction('score', { action: 'sync' }));
-      } catch (e) { return Promise.resolve(null); }
+      } catch (e) { lastSync = { status: 'unreachable', best: null }; return Promise.resolve(null); }
       return p.then(function (r) {
         var res = (r && typeof r === 'object' && Object.prototype.hasOwnProperty.call(r, 'result'))
           ? r.result : r;
-        if (!res || res.sync !== true) return null;
+        if (!res || res.sync !== true) { lastSync = { status: 'noBest', best: null }; return null; }
         var best = res.best;
-        if (typeof best !== 'number' || best <= 0) return null;
+        if (typeof best !== 'number' || best <= 0) { lastSync = { status: 'noBest', best: null }; return null; }
         var level = (typeof res.level === 'number') ? res.level : 0;
         var verdict = res.bestVerdict || 'ok';
         var local = recallHosting();
         var localScore = (local && typeof local.score === 'number') ? local.score : -1;
         if (localScore >= best) {
           log('[cloud] 对账：本地记的托管分 ' + localScore + ' ≥ 云端 ' + best + ' → 不用补写');
+          lastSync = { status: 'noop', best: best };
           return null;
         }
         log('[cloud] 对账：云端 best=' + best + '，本地记的托管分=' +
             (local ? local.score : '无') + ' → 补写托管数据');
+        lastSync = { status: 'writing', best: best };
         return reportHosting(best, level, verdict).then(function (ok) {
+          lastSync = { status: ok ? 'ok' : 'failed', best: best };
           return ok ? best : null;
         });
       }, function () {
+        lastSync = { status: 'unreachable', best: null };
         return null;   // 云端不可达：对账失败不影响玩法
       });
     }
@@ -475,6 +485,9 @@
       reportHosting: reportHosting,
       syncBest: syncBest,
       recallHosting: recallHosting,
+      // 最近一次对账的过程状态（返回值分不出「不用补写 / 云端没给分 / 不可达」，
+      // 所以单独暴露一个状态口，诊断行靠它说人话）
+      syncStatus: function () { return lastSync; },
       enabled: enabled,
       key: key,
       highScore: highScore,

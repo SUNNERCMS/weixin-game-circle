@@ -107,19 +107,22 @@ section('三、buildShowMessage —— 组装给开放域的消息');
     'rankNames 不共享引用（免得被改）');
 }
 
-section('三之二、selfRaw —— 认「我」的兜底判据');
+section('三之二、selfRaw 与 debug —— 认「我」的兜底 + 调试总开关');
 
 {
   // 真机现象（2026-11-08）：榜上有我的 78.3，底部却写「未上榜」。
   // 根因：openid 与自读**同时**拿不到 ⇒ 主域得把自己写出去的托管数据原文发过去。
   const raw = '{"wxgame":{"score":783,"update_time":1780000000},"level":9,"v":"ok"}';
-  const msg = LB.buildShowMessage({ selfRaw: raw });
+  const msg = LB.buildShowMessage({ selfRaw: raw, debug: true });
   ok(msg.selfRaw === raw, 'selfRaw 带上了（开放域靠它认「我」）', msg.selfRaw);
+  ok(msg.debug === true, 'debug 开关带上了（开放域按它决定画不画诊断行）', String(msg.debug));
 }
 
 {
+  // 缺参数不能让整个榜面挂掉
   const msg = LB.buildShowMessage();
   ok(msg.selfRaw === '', '缺 selfRaw → 空串（开放域跳过这条认领路径）', JSON.stringify(msg.selfRaw));
+  ok(msg.debug === false, '缺 debug → false（正式版默认不画诊断行）', String(msg.debug));
 }
 
 section('四、buildHideMessage');
@@ -318,6 +321,28 @@ section('九、scope 名守卫（写错了功能静默失效，单测发现不�
     '**代码里没有** scope.friendCloudStorage（这个 scope 在官方列表里不存在）');
   ok(gameSrc.indexOf('authSetting[') >= 0 && gameSrc.indexOf('[FRIEND_SCOPE]') >= 0,
     'getSetting 读的是同一个 scope 常量（别一个地方改了一个地方没改）');
+}
+
+section('八、诊断总开关：正式版不能有调试行');
+
+{
+  const fs2 = require('fs');
+  const path3 = require('path');
+  const rawSrc = fs2.readFileSync(
+    path3.join(__dirname, '../../who-is-circle/game.js'), 'utf8');
+  const gameSrc = rawSrc.replace(/\/\*[\s\S]*?\*\//g, ' ')
+                       .replace(/(^|[^:'"\\])\/\/[^\n]*/g, '$1');
+
+  ok(/DEBUG\s*:\s*false/.test(gameSrc),
+    '**CFG.DEBUG 默认是 false**（正式版不画任何诊断行）');
+  ok(gameSrc.indexOf('RANK_DEBUG') < 0,
+    '旧的 RANK_DEBUG 开关已并进 CFG.DEBUG（别两处各开各的）');
+  ok(gameSrc.indexOf('CFG.DEBUG && diag') >= 0,
+    '主域的诊断行听 CFG.DEBUG');
+  ok(gameSrc.indexOf('selfRaw: selfRaw') >= 0,
+    '**主域把托管数据原文发给了开放域**（认「我」的兜底）');
+  ok(gameSrc.indexOf('recallHosting()') >= 0,
+    '原文取自本地记的托管数据（js/cloud.js 的 rememberHosting）');
 }
 
 })().then(function () {

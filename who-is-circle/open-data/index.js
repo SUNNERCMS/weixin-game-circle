@@ -472,7 +472,10 @@
       rankNames: msg.rankNames || [],
       avatarImages: state.avatars,
       selfScore: msg.selfScore,
-      debugLine: state.diag || '',   // 开发期诊断行（截图就能看）
+      // 诊断行**由主域的总开关控制**（CFG.DEBUG）——
+      // 开放数据域是独立沙盒，读不到主域的配置，只能靠消息里这个布尔值。
+      // 正式版 ⇒ 一行调试字都不画。
+      debugLine: (msg.debug && state.diag) ? state.diag : '',
       emptyText: '还没有好友在玩'
     };
 
