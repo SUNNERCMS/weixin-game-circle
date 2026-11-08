@@ -67,7 +67,16 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 let S = 0.41459, L = 39.52, T = 31.0;
 const toPage = (dx, dy) => [Math.round(L + dx * S), Math.round(T + dy * S - 0.16)];
 const mouse = (x, y) => run(`${AB} mouse move ${x} ${y}`);
+// 预览壳是 React 应用，**布局会在运行中变**（面板折叠/重排）⇒
+// 之前算好的映射会失效 ⇒ 后面每次点击都落在旧位置 ⇒ 表现为「界面完全没反应」。
+// 所以每次交互前都重新读一次几何（读不到就沿用上次的）。
+function refreshGeo() {
+  const gg = readGeo();
+  if (gg) applyGeo(gg);
+  return gg;
+}
 const click = async (dx, dy) => {
+  refreshGeo();
   const [x, y] = toPage(dx, dy);
   mouse(x, y); run(`${AB} mouse down`); await sleep(60); run(`${AB} mouse up`);
 };
@@ -75,6 +84,7 @@ const shot = async (name) => { run(`${AB} screenshot ${path.join(SHOTS, name + '
 
 // 画一段弧（press=true 时按下；松手由调用方决定）
 async function drawArc(cx, cy, rad, a0deg, a1deg, N, press = true) {
+  refreshGeo();
   let first = true;
   for (let i = 0; i <= N; i++) {
     const a = (a0deg + (a1deg - a0deg) * i / N) * Math.PI / 180;
@@ -118,11 +128,16 @@ if (!await waitForPreview()) {
 await sleep(6000);   // 游戏引擎启动 + 首帧
 
 // 读预览 iframe 的实际几何
+//
+// ⚠️ 别改成读 iframe 内部 canvas 的矩形 —— 实测那样算出来的映射是偏的
+// （scale 从 0.4957 变成 0.5197 ⇒ 点击全落空 ⇒ 表现是「游戏停在首页」）。
+// iframe 的矩形就是对的。
 function readGeo() {
   const raw = run(`${AB} eval "(()=>{const f=document.querySelector('iframe');if(!f)return 'nof';const r=f.getBoundingClientRect();return JSON.stringify({x:r.x,y:r.y,w:r.width,h:r.height});})()"`)
     .replace(/\\/g, '');
   const gm = raw.match(/"x":\s*([-\d.]+)\s*,\s*"y":\s*([-\d.]+)\s*,\s*"w":\s*([-\d.]+)\s*,\s*"h":\s*([-\d.]+)/);
-  return gm ? { x: +gm[1], y: +gm[2], w: +gm[3], h: +gm[4] } : null;
+  if (!gm) return null;
+  return { x: +gm[1], y: +gm[2], w: +gm[3], h: +gm[4] };
 }
 
 // 预览壳把游戏放在右侧的手机预览面板里，iframe 未必填满视口。
@@ -151,9 +166,12 @@ if (!fits(g)) {
 }
 
 // 按预览 iframe 的实际几何反推设计坐标→页面坐标的缩放与偏移
-S = Math.min(g.w / 750, g.h / 1624);
-L = g.x + (g.w - 750 * S) / 2;
-T = g.y + (g.h - 1624 * S) / 2;
+function applyGeo(gg) {
+  S = Math.min(gg.w / 750, gg.h / 1624);
+  L = gg.x + (gg.w - 750 * S) / 2;
+  T = gg.y + (gg.h - 1624 * S) / 2;
+}
+applyGeo(g);
 console.log(`   映射 scale=${S.toFixed(5)} origin=(${L.toFixed(1)},${T.toFixed(1)})`);
 
 await click(375, 980);
