@@ -125,6 +125,24 @@ section('三之二、selfRaw 与 debug —— 认「我」的兜底 + 调试总�
   ok(msg.debug === false, '缺 debug → false（正式版默认不画诊断行）', String(msg.debug));
 }
 
+section('三之三、托管数据里「我的分与段位」—— 认「我」的唯一匹配判据');
+
+{
+  // 主域确认托管数据写成功过 ⇒ 开放域可以做「分数+段位唯一匹配」。
+  // 这条路不依赖任何新存的原文 ⇒ 老设备也能用。
+  const msg = LB.buildShowMessage({ selfHosted: true, selfHostedScore: 78.3, selfHostedLevel: 9 });
+  ok(msg.selfHosted === true, 'selfHosted 带上了', String(msg.selfHosted));
+  ok(msg.selfHostedScore === 78.3, 'selfHostedScore 带上了', String(msg.selfHostedScore));
+  ok(msg.selfHostedLevel === 9, 'selfHostedLevel 带上了', String(msg.selfHostedLevel));
+}
+
+{
+  const msg = LB.buildShowMessage();
+  ok(msg.selfHosted === false, '缺 selfHosted → false（不许用唯一匹配）', String(msg.selfHosted));
+  ok(msg.selfHostedScore === null, '缺 selfHostedScore → null', String(msg.selfHostedScore));
+  ok(msg.selfHostedLevel === null, '缺 selfHostedLevel → null', String(msg.selfHostedLevel));
+}
+
 section('四、buildHideMessage');
 
 {
@@ -343,6 +361,12 @@ section('八、诊断总开关：正式版不能有调试行');
     '**主域把托管数据原文发给了开放域**（认「我」的兜底）');
   ok(gameSrc.indexOf('recallHosting()') >= 0,
     '原文取自本地记的托管数据（js/cloud.js 的 rememberHosting）');
+  ok(gameSrc.indexOf('selfHosted: selfHosted') >= 0 &&
+     gameSrc.indexOf('selfHostedScore: selfHostedScore') >= 0 &&
+     gameSrc.indexOf('selfHostedLevel: selfHostedLevel') >= 0,
+    '**主域把托管数据里的「我的分与段位」也发过去了**（唯一匹配判据靠它）');
+  ok(/h\.score\s*>\s*0/.test(gameSrc),
+    '只有**真的写过托管数据**（记录里的分 > 0）才启用唯一匹配');
 }
 
 })().then(function () {

@@ -979,19 +979,32 @@
       level = RANKS.indexOf(rk.rank);
       if (level < 0) level = null;
     }
-    // 托管数据原文 —— 开放域认「我」的最后一道防线。
-    // 主域知道自己写进云存储的那串 JSON（js/cloud.js 的 rememberHosting 记着），
-    // 开放域拿它跟好友列表里的托管数据原文比对 ⇒ 认得出哪一行是自己。
+    // 托管数据里**我的**分与段位 —— 开放域认「我」的最后一道防线靠它。
+    //
+    // 来源是本地记的托管记录（js/cloud.js 的 rememberHosting）：
+    // 有记录 ⇒ 托管数据写成功过 ⇒ **我的那一行一定在好友列表里**，
+    // 开放域据此做「分数+段位唯一匹配」。
     var selfRaw = '';
+    var selfHosted = false;
+    var selfHostedScore = null;
+    var selfHostedLevel = null;
     if (cloud && cloud.enabled) {
       var h = cloud.recallHosting();
       if (h && typeof h.raw === 'string') selfRaw = h.raw;
+      if (h && typeof h.score === 'number' && h.score > 0) {
+        selfHosted = true;
+        selfHostedScore = h.score;
+        selfHostedLevel = (typeof h.level === 'number') ? h.level : 0;
+      }
     }
     return LeaderboardBridge.buildShowMessage({
       key: CFG.CLOUD_KEY,
       selfScore: best,
       selfLevel: level,
       selfRaw: selfRaw,
+      selfHosted: selfHosted,
+      selfHostedScore: selfHostedScore,
+      selfHostedLevel: selfHostedLevel,
       debug: CFG.DEBUG,
       width: CFG.DESIGN_W,        // 整屏页 = 设计网格整屏
       height: CFG.DESIGN_H,

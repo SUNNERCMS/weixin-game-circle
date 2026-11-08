@@ -649,7 +649,101 @@ section('十二、诊断行必须描述「最终画出来的那份数据」');
   ok(shown.indexOf('2 位好友在玩') >= 0, '榜面还是 2 位好友', shown);
 }
 
-section('十三、诊断行由主域的总开关控制（正式版不画）');
+section('十三、认「我」的最后一道防线：分数+段位**唯一匹配**');
+
+{
+  // 真机现象（2026-11-08 截图）：openid 与自读**同时**失败，原文那条路也用不了
+  // （老设备的 lb_hosting 里没有原文）⇒ 三路全断，榜上明明有自己那行却认不出来。
+  //
+  // 第四路：主域确认「托管数据写成功过」⇒ 我的那一行**一定在**好友列表里
+  // ⇒ 列表中分数与段位都等于我的行**恰好只有一行**时，那行必然是我。
+  const fake = makeFakeWx({
+    friends: [friendEntry('o_1', 'Lion', 82.7, 10), friendEntry('o_me', 'Sun', 78.3, 9)],
+    userInfoFail: true,      // ① 拿不到自己的 openid
+    selfFail: true,          // ③ 自读失败
+  });
+  global.wx = fake;
+  delete require.cache[require.resolve('../../who-is-circle/open-data/index.js')];
+  const OD = require('../../who-is-circle/open-data/index.js');
+  OD.handleMessage({ type: 'showLeaderboard', key: 'circle', width: 750, height: 1624, scale: 2,
+    rankNames: RN10, style: {}, selfScore: 78.3, debug: true,
+    selfHosted: true, selfHostedScore: 78.3, selfHostedLevel: 9 }, fake);
+  await new Promise((r) => setTimeout(r, 60));
+
+  const ts = odTexts(fake.ctx);
+  ok(ts.indexOf('我') >= 0, '靠「分数+段位唯一匹配」认出了「我」',
+    ts.filter(t => t === '我' || t.indexOf('历史最高') >= 0).join('|') || '(没画)');
+  ok(ts.some(t => t.indexOf('我的历史最高') >= 0),
+    '底部是「我的历史最高 · 第 N 名」，不再是「未上榜」',
+    ts.filter(t => t.indexOf('历史最高') >= 0).join('|') || '(没画)');
+  ok(ts.every(t => t.indexOf('暂未上榜') < 0), '**不再显示「暂未上榜」**');
+  ok(ts.some(t => t.indexOf('1 位好友在玩') >= 0), '好友数把自己算掉了',
+    ts.filter(t => t.indexOf('位好友在玩') >= 0).join('|') || '(没画)');
+}
+
+{
+  // ⚠️ **同分同段位的好友有两个** ⇒ 匹配数是 2 ⇒ 认不出（宁可认不出，也不认错人）
+  const fake = makeFakeWx({
+    friends: [friendEntry('o_1', '小明', 78.3, 9), friendEntry('o_2', '小红', 78.3, 9)],
+    userInfoFail: true,
+    selfFail: true,
+  });
+  global.wx = fake;
+  delete require.cache[require.resolve('../../who-is-circle/open-data/index.js')];
+  const OD = require('../../who-is-circle/open-data/index.js');
+  OD.handleMessage({ type: 'showLeaderboard', key: 'circle', width: 750, height: 1624, scale: 2,
+    rankNames: RN10, style: {}, selfScore: 78.3, debug: true,
+    selfHosted: true, selfHostedScore: 78.3, selfHostedLevel: 9 }, fake);
+  await new Promise((r) => setTimeout(r, 60));
+
+  const ts = odTexts(fake.ctx);
+  ok(ts.indexOf('我') < 0, '**匹配到多行 → 不乱认人**', ts.filter(t => t === '我').join('|') || '(没认)');
+  ok(ts.some(t => t.indexOf('小明') >= 0) && ts.some(t => t.indexOf('小红') >= 0),
+    '两个好友都照常显示');
+}
+
+{
+  // 主域**没确认**托管数据写成功过（selfHosted=false）⇒ 这条路不许用
+  // （否则「我的托管数据没写进去」时，会把一个同分的好友误认成我）
+  const fake = makeFakeWx({
+    friends: [friendEntry('o_1', '小明', 78.3, 9)],
+    userInfoFail: true,
+    selfFail: true,
+  });
+  global.wx = fake;
+  delete require.cache[require.resolve('../../who-is-circle/open-data/index.js')];
+  const OD = require('../../who-is-circle/open-data/index.js');
+  OD.handleMessage({ type: 'showLeaderboard', key: 'circle', width: 750, height: 1624, scale: 2,
+    rankNames: RN10, style: {}, selfScore: 78.3, debug: true,
+    selfHosted: false, selfHostedScore: 78.3, selfHostedLevel: 9 }, fake);
+  await new Promise((r) => setTimeout(r, 60));
+
+  const ts = odTexts(fake.ctx);
+  ok(ts.indexOf('我') < 0, '主域没确认托管写入 → 不启用唯一匹配', ts.filter(t => t === '我').join('|') || '(没认)');
+}
+
+{
+  // 分数要有容差：托管数据里存的是「分×10」的整数，榜上读到的是 ÷10
+  // （与本地记的全精度分可能有 1e-9 级的差 ⇒ 不能用 === 比）
+  const fake = makeFakeWx({
+    friends: [friendEntry('o_1', 'Lion', 82.7, 10), friendEntry('o_me', 'Sun', 78.3, 9)],
+    userInfoFail: true,
+    selfFail: true,
+  });
+  global.wx = fake;
+  delete require.cache[require.resolve('../../who-is-circle/open-data/index.js')];
+  const OD = require('../../who-is-circle/open-data/index.js');
+  OD.handleMessage({ type: 'showLeaderboard', key: 'circle', width: 750, height: 1624, scale: 2,
+    rankNames: RN10, style: {}, selfScore: 78.3, debug: true,
+    selfHosted: true, selfHostedScore: 78.30000000000001, selfHostedLevel: 9 }, fake);
+  await new Promise((r) => setTimeout(r, 60));
+
+  const ts = odTexts(fake.ctx);
+  ok(ts.indexOf('我') >= 0, '分数有 1e-14 级的差也能认出来（容差比较）',
+    ts.filter(t => t === '我').join('|') || '(没认)');
+}
+
+section('十四、诊断行由主域的总开关控制（正式版不画）');
 
 {
   // 正式版：msg.debug 为 false ⇒ 榜面上**一行调试字都不该有**

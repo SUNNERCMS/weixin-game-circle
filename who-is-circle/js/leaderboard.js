@@ -102,11 +102,20 @@
       lastReason: (typeof o.lastReason === 'string') ? o.lastReason : '',
       // **主域自己写出去的托管数据原文** —— 开放域认不出「我」时的兜底。
       //
-      // 为什么需要：开放域认「我」有三条路 —— openid（getUserInfo，可能失败）、
-      // 自读（getUserCloudStorage，可能返回空）、托管数据原文（主域给）。
+      // 为什么需要：开放域认「我」有四条路 —— openid（getUserInfo，可能失败）、
+      // 自读（getUserCloudStorage，可能返回空）、托管数据原文（主域给）、
+      // 分数+段位唯一匹配（主域给托管数据里的分与段位）。
       // 前两条在真机上**同时失败**过（截图：榜上 78.3，底部却说「未上榜」），
-      // 第三条是最后一道防线：原文完全相同 ⇒ 好友列表里那一行就是我。
+      // 后两条是兜底。
       selfRaw: (typeof o.selfRaw === 'string') ? o.selfRaw : '',
+      // 托管数据里**我的**分与段位（= 我在榜上那一行的内容）
+      //
+      // 有了它，开放域就能做「分数+段位**唯一匹配**」：
+      // 主域确认托管数据写成功过 ⇒ 我的那一行一定在好友列表里
+      // ⇒ 列表中分数与段位都等于我的行**恰好只有一行**时，那行必然是我。
+      selfHosted: !!o.selfHosted,
+      selfHostedScore: (typeof o.selfHostedScore === 'number' && isFinite(o.selfHostedScore)) ? o.selfHostedScore : null,
+      selfHostedLevel: (typeof o.selfHostedLevel === 'number' && isFinite(o.selfHostedLevel)) ? o.selfHostedLevel : null,
       // 开发期诊断总开关（主域统一控制；开放域按它决定要不要画诊断行）
       debug: !!o.debug,
       // 共享画布只能是屏幕大小（逻辑px）—— 平台不接受别的尺寸。

@@ -154,7 +154,7 @@
       state.loading = true;
       // 头像不清：avatarUrl 是稳定的，复用已加载的图，省一次网络请求
       renderNow();
-      pull(getWx(), msg.key || 'circle', msg.selfRaw || '').then(function (res) {
+      pull(getWx(), msg.key || 'circle', msg).then(function (res) {
         var rows = res.rows || [];
         var err = res.error || '';
         var diag = res.diag || '';
@@ -199,15 +199,20 @@
    * 拉好友数据 + 自己的数据 → 归一化 → 排序。
    * 好友失败不牵连自己，自己失败不牵连好友（各自独立兜底）。
    *
-   * @param {object} wxApi    wx API
-   * @param {string} key      托管数据的 key
-   * @param {string} selfRaw  **主域自己写出去的托管数据原文**（认「我」的兜底判据）
+   * @param {object} wxApi  wx API
+   * @param {string} key    托管数据的 key
+   * @param {object} opts   主域发来的 showLeaderboard 消息（认「我」的判据都在里面）
    * @returns {Promise<{rows: Array, error: string, diag: string}>}
    */
-  function pull(wxApi, key, selfRaw) {
+  function pull(wxApi, key, opts) {
     var w = wxApi || getWx();
     var k = key || 'circle';
-    var myRaw = (typeof selfRaw === 'string') ? selfRaw : '';
+    var o = (opts && typeof opts === 'object') ? opts : {};
+    var myRaw = (typeof o.selfRaw === 'string') ? o.selfRaw : '';
+    // 主域确认过的「托管数据里我的分与段位」（= 我在榜上那一行的内容）
+    var hostedOk = !!o.selfHosted;
+    var hostedScore = (typeof o.selfHostedScore === 'number' && isFinite(o.selfHostedScore)) ? o.selfHostedScore : null;
+    var hostedLevel = (typeof o.selfHostedLevel === 'number' && isFinite(o.selfHostedLevel)) ? o.selfHostedLevel : null;
     if (!w) return Promise.resolve({ rows: [], error: '没有微信环境', diag: '无微信环境' });
 
     var friendsP = new Promise(function (resolve) {
@@ -247,26 +252,26 @@
       var selfData = pair[1];
       var error = (friendData === null) ? '读不到好友数据' : '';
 
-      // ---- 认「我」：三条路，前两条断了还有第三条 ----
+      // ---- 认「我」：四条路，前三条断了还有第四条 ----
       //
-      //   ① openid 相等      （getUserInfo 拿 openId —— 可能失败）
-      //   ② 托管数据原文相等 （主域知道自己写出去的那串 JSON —— 最稳的兜底）
-      //   ③ 自读             （getUserCloudStorage —— 可能返回空）
+      //   ① openid 相等       （getUserInfo 拿 openId —— 可能失败）
+      //   ② 托管数据原文相等  （主域知道自己写出去的那串 JSON）
+      //   ③ 自读              （getUserCloudStorage —— 可能返回空）
+      //   ④ 分数+段位**唯一匹配**（主域确认托管数据写成功过 ⇒ 我的行一定在列表里）
       //
       // 真机上 ① 和 ③ **同时失败**过（截图：榜上有我的 78.3，底部却说「未上榜」），
-      // 所以 ② 必须留着 —— 它是最后一道防线。
+      // ② 又依赖本地存过原文（老设备没有）⇒ ④ 是最后一道防线。
       var rows = [];
       var list = friendData || [];
-      var selfByOpenid = null;
-      var selfByRaw = null;
+      var selfFound = null;      // 在好友列表里认出的「我」那一行
       var claimedBy = '';
       for (var i = 0; i < list.length; i++) {
         var row = Board ? Board.normalizeFriendEntry(list[i], k) : null;
         if (!row) continue;           // 解析不出来 → 跳过，不占名次
         // ① 好友列表里遇到自己（openid 相等）→ 摘出去，下面统一当 selfRow 处理
-        if (!selfByOpenid && myOpenid && row.openid === myOpenid) {
+        if (!selfFound && myOpenid && row.openid === myOpenid) {
           row.isSelf = true;
-          selfByOpenid = row;
+          selfFound = row;
           claimedBy = 'openid';
           continue;
         }
@@ -274,15 +279,39 @@
       }
       // ② 兜底：openid 认不出时，用**托管数据原文**认
       //    （主域写出去的那串 JSON 与好友列表里我那一行的原文完全相同）
-      if (!selfByOpenid && myRaw) {
+      if (!selfFound && myRaw) {
         for (var m = 0; m < rows.length; m++) {
           if (rows[m].raw && rows[m].raw === myRaw) {
             rows[m].isSelf = true;
-            selfByRaw = rows[m];
+            selfFound = rows[m];
             rows.splice(m, 1);
             claimedBy = '原文';
             break;
           }
+        }
+      }
+      // ④ 再兜底：openid 与原文都拿不到时，用**分数 + 段位唯一匹配**认
+      //
+      //    判据为什么可靠：主域确认「托管数据写成功过」⇒ 我的那一行**一定在**好友列表里
+      //    ⇒ 列表中「分数与段位都等于我」的行**恰好只有一行**时，那行必然是我。
+      //    若真有第二个同分同段位的好友 ⇒ 匹配数是 2 ⇒ **认不出**（宁可认不出，也不认错人）。
+      //
+      //    分数要留容差：托管数据里存的是「分×10」的整数，榜上读到的是它 ÷10，
+      //    与本地记的全精度分可能有 1e-9 级的差。
+      if (!selfFound && hostedOk && hostedScore !== null && hostedLevel !== null) {
+        var hits = [];
+        for (var q = 0; q < rows.length; q++) {
+          if (Math.abs(rows[q].score - hostedScore) < 0.05 && rows[q].level === hostedLevel) {
+            hits.push(rows[q]);
+          }
+        }
+        if (hits.length === 1) {
+          hits[0].isSelf = true;
+          selfFound = hits[0];
+          rows.splice(rows.indexOf(hits[0]), 1);
+          claimedBy = '唯一';
+        } else if (hits.length > 1) {
+          odLog('分数+段位匹配到 ' + hits.length + ' 行 → 认不出（不乱认人）');
         }
       }
 
@@ -295,13 +324,12 @@
       }
       if (!selfRow) {
         // 自读失败 → 用好友列表里认出的那一行（自读失败时，它就是「我」的唯一证据）
-        if (selfByOpenid) { selfRow = selfByOpenid; }
-        else if (selfByRaw) { selfRow = selfByRaw; }
+        if (selfFound) { selfRow = selfFound; }
         else { claimedBy = claimedBy || '不出'; }
       }
       if (selfRow && !claimedBy) claimedBy = '自读';
 
-      var inFriends = !!(selfByOpenid || selfByRaw);
+      var inFriends = !!selfFound;
       odLog('好友 ' + rows.length + ' 行（自己' + (inFriends ? '在列表里' : '不在列表里') +
             '），自读 ' + ((selfData && selfData.length) ? selfData.length + ' 行' : '空') +
             '，认领方式 ' + claimedBy);
@@ -325,7 +353,7 @@
    *   自读✗/0/1  读自己的托管数据：✗=失败，0=空，1=有
    *   好友N      好友数（不含我）
    *   我是✓/✗   在好友列表里认出自己了没有
-   *   认openid/原文/自读/不出  靠哪条路认出的
+   *   认openid/原文/唯一/自读/不出  靠哪条路认出的
    *   id有/无    拿到自己的 openId 没有
    */
   function buildDiag(selfData, friendCount, inFriends, claimedBy, hasOpenid) {
