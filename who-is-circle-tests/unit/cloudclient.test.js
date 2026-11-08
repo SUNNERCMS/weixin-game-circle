@@ -565,6 +565,79 @@ console.log('\n========== 十一、托管数据原文被记下来了（开放域
     JSON.stringify(parsed));
 }
 
+console.log('\n========== 十二、存量迁移：记录里没有原文 → 对账补写一次 ==========');
+
+{
+  // 真机现象（2026-11-08）：老设备的 lb_hosting 是旧版写的，只有
+  // {score, level, verdict, at}，**没有原文** ⇒ 开放域「按原文认我」那条路用不了。
+  //
+  // 修法：对账时发现「托管分已是最新但记录里没原文」⇒ 补写一次（写的是云端权威分，
+  // 榜上不变），让记录带上原文 —— 不必等玩家再破一次纪录。
+  const env = makeDeps({
+    callResult: function (name, data) {
+      if (data && data.action === 'sync') {
+        return Promise.resolve({ result: { ok: true, sync: true, best: 78.3, level: 9, bestVerdict: 'ok' } });
+      }
+      return Promise.resolve({ result: { ok: true, verdict: 'ok' } });
+    }
+  });
+  const c = Cloud.createClient(env.deps);
+  // 造一条**老记录**：没有 raw 字段
+  env.deps.storage.set('lb_hosting', JSON.stringify({ score: 78.3, level: 9, verdict: 'ok', at: 1700000000000 }));
+  ok(c.recallHosting() && typeof c.recallHosting().raw !== 'string',
+    '前置：这条记录确实没有原文', JSON.stringify(c.recallHosting()));
+
+  const got = await c.syncBest();
+  ok(got === 78.3, '对账：补写成功', String(got));
+  ok(c.syncStatus().status === 'resync', '状态是 resync（补原文，不是普通补写）', c.syncStatus().status);
+  ok(env.hosted.length === 1, '托管数据被写了一次', 'writes=' + env.hosted.length);
+  const v = JSON.parse(env.hosted[0].KVDataList[0].value);
+  ok(v.wxgame.score === 783, '写的是云端权威分（×10）—— 榜上分数不变', String(v.wxgame.score));
+  ok(c.recallHosting() && typeof c.recallHosting().raw === 'string',
+    '**记录里现在有原文了**', JSON.stringify(c.recallHosting()));
+  ok(c.recallHosting().raw === env.hosted[0].KVDataList[0].value,
+    '原文与写进云存储的内容逐字符相同');
+}
+
+{
+  // 已经有原文 → 不该多写一次（幂等，别每次启动都写托管）
+  const env = makeDeps({
+    callResult: function (name, data) {
+      if (data && data.action === 'sync') {
+        return Promise.resolve({ result: { ok: true, sync: true, best: 78.3, level: 9, bestVerdict: 'ok' } });
+      }
+      return Promise.resolve({ result: { ok: true, verdict: 'ok' } });
+    }
+  });
+  const c = Cloud.createClient(env.deps);
+  await c.reportHosting(78.3, 9, 'ok');   // 这条记录带原文
+  await tick();
+  const writesBefore = env.hosted.length;
+
+  const got = await c.syncBest();
+  ok(got === null, '有原文 + 托管分已是最新 → 不补写', String(got));
+  ok(c.syncStatus().status === 'noop', '状态是 noop', c.syncStatus().status);
+  ok(env.hosted.length === writesBefore, '没有多余的托管写入', 'writes=' + env.hosted.length);
+}
+
+{
+  // 本地分比云端还高（异常）→ 不补写（不能把托管数据写低）
+  const env = makeDeps({
+    callResult: function (name, data) {
+      if (data && data.action === 'sync') {
+        return Promise.resolve({ result: { ok: true, sync: true, best: 70, level: 8, bestVerdict: 'ok' } });
+      }
+      return Promise.resolve({ result: { ok: true, verdict: 'ok' } });
+    }
+  });
+  const c = Cloud.createClient(env.deps);
+  env.deps.storage.set('lb_hosting', JSON.stringify({ score: 90, level: 11, verdict: 'ok', at: 1700000000000 }));
+  const got = await c.syncBest();
+  ok(got === null, '本地分更高 → 不补写', String(got));
+  ok(c.syncStatus().status === 'noop', '状态是 noop（不把托管数据写低）', c.syncStatus().status);
+  ok(env.hosted.length === 0, '没有写入', 'writes=' + env.hosted.length);
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
   process.exit(fail ? 1 : 0);
 })().catch(e => {

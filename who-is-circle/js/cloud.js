@@ -460,7 +460,24 @@
         var verdict = res.bestVerdict || 'ok';
         var local = recallHosting();
         var localScore = (local && typeof local.score === 'number') ? local.score : -1;
+        var hasRaw = !!(local && typeof local.raw === 'string' && local.raw);
         if (localScore >= best) {
+          // 存量迁移：本地记的托管分已经是最新，但记录里**没有原文**
+          //（老版本写的记录只有 score/level/verdict/at）⇒ 补写一次，让记录带上原文。
+          //
+          // 为什么需要：开放域认「我」的兜底判据之一是「托管数据原文逐字符相同」，
+          // 没有原文那条路就用不了 —— 等玩家再破一次纪录才有，代价太大。
+          //
+          // 补写的是**云端权威最高分**，与原来写进去的是同一个分 ⇒ 榜上不变。
+          // （本地分比云端还高时不动 —— 那是异常，宁可不动也不把托管数据写低。）
+          if (Math.abs(localScore - best) < 0.0001 && !hasRaw) {
+            log('[cloud] 对账：托管分已是最新但记录里没有原文 → 补写一次（认「我」要用）');
+            lastSync = { status: 'resync', best: best };
+            return reportHosting(best, level, verdict).then(function (ok) {
+              lastSync = { status: ok ? 'resync' : 'failed', best: best };
+              return ok ? best : null;
+            });
+          }
           log('[cloud] 对账：本地记的托管分 ' + localScore + ' ≥ 云端 ' + best + ' → 不用补写');
           lastSync = { status: 'noop', best: best };
           return null;

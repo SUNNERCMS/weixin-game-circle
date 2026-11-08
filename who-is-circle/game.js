@@ -1325,6 +1325,7 @@
           : (typeof best === 'number' ? best : null);
     switch (status) {
       case 'ok':       return '对账✓补写' + (b !== null ? b : '');
+      case 'resync':   return '对账↻补原文';
       case 'noop':     return '对账=已同步';
       case 'noBest':   return '对账✗云端无分';
       case 'failed':   return '对账✗补写失败';
