@@ -352,6 +352,47 @@
     return w;
   }
 
+  /* ---- 颜色 ---- */
+
+  /** #rrggbb → [r,g,b]（认不出来就返回 null） */
+  function hexToRgb(h) {
+    if (typeof h !== 'string') return null;
+    var m = /^#?([0-9a-f]{6})$/i.exec(h.trim());
+    if (!m) return null;
+    var n = parseInt(m[1], 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+
+  /**
+   * 两个颜色之间线性插值（t: 0=a, 1=b）。
+   * 返回 #rrggbb —— 与输入同形，t=0 时**原样返回**（不换格式，免得样式表看着花）。
+   */
+  function mixHex(a, b, t) {
+    var ca = hexToRgb(a), cb = hexToRgb(b);
+    if (!ca || !cb) return a;
+    var k = (typeof t === 'number' && isFinite(t)) ? Math.max(0, Math.min(1, t)) : 0;
+    var r = Math.round(ca[0] + (cb[0] - ca[0]) * k);
+    var g = Math.round(ca[1] + (cb[1] - ca[1]) * k);
+    var bl = Math.round(ca[2] + (cb[2] - ca[2]) * k);
+    return '#' + ((1 << 24) + (r << 16) + (g << 8) + bl).toString(16).slice(1).toUpperCase();
+  }
+
+  /**
+   * 段位胶囊的底色：**随段位变深**。
+   *
+   * 为什么：13 个段位如果全用同一个底色，玩家看不出「满月」比「轮胎」高一档 ——
+   * 榜上高低差一档却长得一模一样，等于没有段位。
+   * 用**同一色相**（暖橙）由浅到深 ⇒ 一眼看出高低，又不引入新的颜色体系。
+   *
+   * 上限 0.55：再深就压不住深色文字了（#2C2C2A 在最深处仍有 6:1 以上的对比度）。
+   */
+  function rankPillBg(level, rankNames, st) {
+    var n = (rankNames && rankNames.length) ? rankNames.length : 13;
+    var lv = (typeof level === 'number' && isFinite(level) && level >= 0) ? level : 0;
+    var t = Math.max(0, Math.min(1, lv / (n - 1)));
+    return mixHex(st.colorPillBg, st.colorBadge, t * 0.55);
+  }
+
   /**
    * 不在榜上时，说明「本地最高分为什么没上榜」。
    *
@@ -589,7 +630,7 @@
       var py = cy + 6;
       if (rname) {
         px += drawPill(ctx, px, py, rname, {
-          h: PILL_H, bg: st.colorPillBg, fg: st.colorText,
+          h: PILL_H, bg: rankPillBg(r.level, rankNames, st), fg: st.colorText,
           font: '22px sans-serif', maxW: 240
         }) + 8;
       }
@@ -671,6 +712,9 @@
     rowPlan: rowPlan,
     boardHeight: boardHeight,
     pageLayout: pageLayout,
+    // 段位胶囊的配色（导出是为了能直接断言 —— 画到画布上的底色不好从假 ctx 里读）
+    rankPillBg: rankPillBg,
+    mixHex: mixHex,
     DEFAULT_STYLE: DEFAULT_STYLE,
     MAX_ROWS: MAX_ROWS
   };

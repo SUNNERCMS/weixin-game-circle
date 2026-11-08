@@ -49,6 +49,21 @@ function makeCtx() {
 function texts(ctx) { return ctx.calls.filter(c => c.op === 'fillText').map(c => c.t); }
 function findText(ctx, needle) { return ctx.calls.filter(c => c.op === 'fillText' && c.t.indexOf(needle) >= 0); }
 
+// 颜色的相对亮度（0=黑, 1=白）—— 用来断言「胶囊底色随段位单调变深」且「最深处仍够浅」
+function luminance(color) {
+  let r, g, b;
+  if (typeof color === 'string' && color.charAt(0) === '#') {
+    const n = parseInt(color.slice(1), 16);
+    r = (n >> 16) & 255; g = (n >> 8) & 255; b = n & 255;
+  } else {
+    const m = /rgb\((\d+)\s*,\s*(\d+)\s*,\s*(\d+)\)/.exec(color || '');
+    if (!m) return 0;
+    r = +m[1]; g = +m[2]; b = +m[3];
+  }
+  const f = c => { const s = c / 255; return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4); };
+  return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+}
+
 const RANK_NAMES = ['灾难现场', '一团面条', '土豆', '饺子', '鸡蛋', '甜甜圈', '饼干', '轮胎', '满月', '圆规', '教科书', '精密仪器', '神之圆'];
 
 // 托管数据的 value（P3.5 定案）
@@ -378,6 +393,41 @@ section('十一、不在榜上时，底部那行要说清原因');
     '云端不可达 → 「云端未达，暂未上榜」', drawBottom({ lastVerdict: 'unavailable' }));
   ok(drawBottom({ lastVerdict: 'reject', lastReason: '' }).indexOf('成绩未获认可') >= 0,
     '有结论但没原因 → 退到通用说法');
+}
+
+section('段位胶囊按段位深浅（13 档全一样 ⇒ 等于没有段位）');
+
+{
+  // 为什么要有这个：满月(80+) 与轮胎(70+) 在榜上长得一模一样，
+  // 玩家看不出高一档意味着什么。同一色相由浅到深 ⇒ 一眼看出高低，又不引入新色系。
+  const st = Board.clampStyle({});
+  const n = RANK_NAMES.length;
+
+  const low = Board.rankPillBg(0, RANK_NAMES, st);
+  const mid = Board.rankPillBg(7, RANK_NAMES, st);
+  const high = Board.rankPillBg(12, RANK_NAMES, st);
+
+  ok(low !== mid && mid !== high, '不同段位的胶囊底色不同', [low, mid, high].join(' / '));
+  ok(low === st.colorPillBg, '最低段位保持原底色（不惊动现有视觉）', low);
+
+  // 深浅必须单调：段位越高越**深**（亮度单调下降，不能来回跳）
+  const chain = [];
+  for (let i = 0; i < n; i++) chain.push(Board.rankPillBg(i, RANK_NAMES, st));
+  let monotone = true;
+  for (let i = 1; i < chain.length; i++) {
+    if (luminance(chain[i]) > luminance(chain[i - 1]) + 0.001) monotone = false;
+  }
+  ok(monotone, '段位越高胶囊越深（亮度单调下降）', chain[0] + ' → ' + chain[n - 1]);
+
+  ok(luminance(high) > 0.25, '最高段位的底色仍够浅，压得住深色文字',
+    high + ' L=' + luminance(high).toFixed(3));
+
+  // 越界/异常输入不能把颜色算坏
+  ok(Board.rankPillBg(-1, RANK_NAMES, st) === low, 'level 越界 → 退到最低档');
+  ok(Board.rankPillBg(undefined, RANK_NAMES, st) === low, 'level 缺失 → 退到最低档');
+  ok(Board.rankPillBg(99, RANK_NAMES, st) === high, 'level 超界 → 钳到最高档');
+  ok(Board.rankPillBg(5, [], st) === Board.rankPillBg(5, RANK_NAMES, st),
+    '段位名表缺失时按 13 档算（不崩）');
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
