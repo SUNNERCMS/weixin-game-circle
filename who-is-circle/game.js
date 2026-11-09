@@ -1244,9 +1244,13 @@
       res.cloudPending = !DEV;
       // 兜底：云端结论回不来（超时/异常）时别把最佳分永远卡住。
       // 超时 → 按「服务不可达」处理 → 解除等待 → 最佳分照常落定（保持单机行为）。
-      state.settleGuardTimer = setTimeout(function () {
-        state.settleGuardTimer = null;
-        if (state.bestPending && state.bestPending.cloudPending) {
+      // 兜底定时器**绑在这一局上**（res.settleTimer），不是全局单槽 ——
+      // 玩家在上一局云调用还没回来时就画了下一局 ⇒ 两个定时器会互相踩：
+      // 上一局的结论一到就把下一局的兜底清了 ⇒ 下一局提前乐观落定。
+      res.settleTimer = setTimeout(function () {
+        res.settleTimer = null;
+        // 只解除**自己那一局**的等待（bestPending 用笔迹数组引用做身份判定）
+        if (state.bestPending && state.bestPending.pts === res.pts && state.bestPending.cloudPending) {
           state.bestPending.cloudPending = false;
           odLog('云端结论超时 → 解除等待（最佳分照常落定）');
         }
@@ -1274,11 +1278,11 @@
   //   本地最佳分照常更新、徽章照常弹，只是不上榜、不弹错误提示
   function onCloudSettled(res, final) {
     if (!res || !final) return;
-    // 云端结论到了 → 解除兜底定时器
+    // 云端结论到了 → 解除**这一局**的兜底定时器（不是全局单槽，见 finishStroke 的注释）
     try {
-      if (state.settleGuardTimer) {
-        clearTimeout(state.settleGuardTimer);
-        state.settleGuardTimer = null;
+      if (res.settleTimer) {
+        clearTimeout(res.settleTimer);
+        res.settleTimer = null;
       }
     } catch (e) { /* ignore */ }
     // 记下云端结论 —— 榜面底部那行用它说明「为什么本地最高分没上榜」
