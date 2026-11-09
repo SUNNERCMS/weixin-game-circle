@@ -4,7 +4,7 @@
   "private": true,
   "description": "《谁最圆》回归套件：单元测试 + 端到端像素验收（与小游戏项目同级，不参与打包）",
   "scripts": {
-    "test": "node unit/scorer.test.js && node unit/shared.test.js && node unit/opendata.test.js && node unit/board.test.js && node unit/leaderboard.test.js && node unit/cloudcore.test.js && node unit/cleanup.test.js && node unit/cloudfn.test.js && node unit/cloudclient.test.js && node unit/gamesettle.test.js",
+    "test": "node unit/scorer.test.js && node unit/shared.test.js && node unit/opendata.test.js && node unit/board.test.js && node unit/leaderboard.test.js && node unit/cloudcore.test.js && node unit/cleanup.test.js && node unit/cloudfn.test.js && node unit/cloudclient.test.js && node unit/gamesettle.test.js && node unit/bestrollback.test.js",
     "test:unit": "node unit/scorer.test.js",
     "test:shared": "node unit/shared.test.js",
     "test:opendata": "node unit/opendata.test.js",

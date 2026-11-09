@@ -828,12 +828,51 @@
   // 最高分存档自校验：连最佳那局的原始笔迹一起存，启动时用当前引擎重算
   // 想改出一个 99 分的最高分，就得伪造出一条能拿 99 分、又能通过行为检查的笔迹
   function saveBestRecord(score, pts) {
+    // 破纪录时把**上一条**存档挪到 best_rec_prev ——
+    // 云端结论晚到、判这一局无效时，要回退到「上一条有效最佳分」，
+    // 而不是把玩家累积的成绩清零（存档已被这一局覆盖，清零就找不回来了）。
+    var prev = readBestRecordRaw();
+    if (prev && typeof prev.score === 'number' && prev.score < score) {
+      try { env.setStorageRaw('best_rec_prev', JSON.stringify(prev)); } catch (e) { /* ignore */ }
+    }
     var rec = { v: GUARD_CFG.BEST_VERSION, score: score, pts: encodePts(pts) };
     rec.sum = fnv(BEST_SALT + JSON.stringify([rec.v, rec.score, rec.pts]));
     env.setStorageRaw('best_rec', JSON.stringify(rec));
   }
 
-  // 作废本地最佳分存档（云端判这一局无效时用）
+  // 读存档的**原始记录**（只验校验和，不重算笔迹）——
+  // 重算要花时间，而且「上一条」只需要确认没被篡改。
+  function readBestRecordRaw() {
+    try {
+      var s = env.getStorageRaw('best_rec');
+      if (!s) return null;
+      var rec = JSON.parse(s);
+      if (!rec || rec.v !== GUARD_CFG.BEST_VERSION) return null;
+      if (rec.sum !== fnv(BEST_SALT + JSON.stringify([rec.v, rec.score, rec.pts]))) return null;
+      return rec;
+    } catch (e) { return null; }
+  }
+
+  // 回退到「上一条有效最佳分」。
+  // @returns {number|null} 回退后的分数；没有上一条 ⇒ null（此时才该清零）
+  function restorePrevBestRecord() {
+    try {
+      var s = env.getStorageRaw('best_rec_prev');
+      if (!s) { clearBestRecord(); return null; }
+      var rec = JSON.parse(s);
+      if (!rec || rec.v !== GUARD_CFG.BEST_VERSION) { clearBestRecord(); return null; }
+      if (rec.sum !== fnv(BEST_SALT + JSON.stringify([rec.v, rec.score, rec.pts]))) {
+        clearBestRecord(); return null;
+      }
+      // 也要验笔迹能重算出这个分（否则回退过去也是一条坏档）
+      var r = evaluate(decodePts(rec.pts));
+      if (!r.valid || Math.abs(r.score - rec.score) > 0.15) { clearBestRecord(); return null; }
+      env.setStorageRaw('best_rec', s);
+      return rec.score;
+    } catch (e) { clearBestRecord(); return null; }
+  }
+
+  // 作废本地最佳分存档（云端判这一局无效、且**没有上一条**可回退时用）
   function clearBestRecord() {
     try { env.setStorageRaw('best_rec', ''); } catch (e) { /* ignore */ }
   }
@@ -1251,7 +1290,10 @@
                         (typeof final.hostedScore === 'number' ? ' ' + final.hostedScore : '');
     }
     if (final.status === 'ok') {
-      var cs = final.cloudScore;
+      // ⚠️ 必须校验类型 —— `state.best` 一旦变成 undefined，
+      //    渲染时 `state.best.toFixed(1)` 会抛异常 → 画面卡死。
+      var cs = (typeof final.cloudScore === 'number' && isFinite(final.cloudScore))
+        ? final.cloudScore : res.score;
       if (typeof cs === 'number' && Math.abs(cs - res.score) > 0.001) {
         res.score = cs;
         var rk = getRank(cs);
@@ -1273,7 +1315,11 @@
         var localScore = (typeof res.localScore === 'number') ? res.localScore : res.score;
         if (state.best === localScore && Math.abs(cs - localScore) <= 0.15) {
           state.best = cs;
-          try { saveBestRecord(cs, state.result && state.result.pts); } catch (e) { /* ignore */ }
+          // ⚠️ 必须用 **res.pts**（这一局的笔迹），不能用 `state.result.pts` ——
+          //    `state.result` 是**当前**那一局：玩家在结论晚到之前又画了新的一局时，
+          //    它已经被顶掉了 ⇒ 存档会写成「旧分 + 新笔迹」⇒
+          //    下次启动自校验重算对不上 ⇒ **最高分静默消失**。
+          try { saveBestRecord(cs, res.pts); } catch (e) { /* ignore */ }
         }
       }
       return;
@@ -1286,12 +1332,16 @@
           state.bestPending = null;   // 云端判无效 → 本地最佳分不动
         } else if (state.best === ((typeof res.localScore === 'number') ? res.localScore : res.score)) {
           // ⚠️ **结论晚到了**（超过了结算页的等待上限，最佳分已乐观落定）
-          // ⇒ 这一局云端不认 ⇒ 本地最佳分要作废。
-          // 存档是「分数 + 笔迹 + 校验和」自校验的，改分数会破坏校验 ⇒
-          // 只能整条作废（这一局的分本来就不该算数）。
-          state.best = null;
-          clearBestRecord();
-          odLog('云端判无效（结论晚到）→ 本地最佳分已作废');
+          // ⇒ 这一局云端不认 ⇒ 它的分不该算数。
+          //
+          // ⚠️ 但**不是清零**！乐观落定时存档已经被这一局覆盖了，
+          //    直接清空会把玩家**上一条有效最高分**（比如 90）一起弄丢 ——
+          //    业务规则写的是「云端判无效 → 本地最佳分不动」。
+          //    所以：回退到「上一条有效存档」（saveBestRecord 破纪录时存下的）。
+          var prev = restorePrevBestRecord();
+          state.best = (prev !== null) ? prev : null;
+          odLog('云端判无效（结论晚到）→ 本地最佳分' +
+                (prev !== null ? ('回退到 ' + prev) : '已作废（没有上一条）'));
         }
         return;
       }
@@ -2154,6 +2204,12 @@
       computePasteRect: computePasteRect,
       // 结算链路（P3）的集成测试钩子：state 是运行时状态，onCloudSettled 是云端结论落地的入口
       state: state, onCloudSettled: onCloudSettled,
+      // 最高分存档的读写（单测钩子：存档是「分数+笔迹+校验和」自校验的，
+      // 要验证「存进去的是哪一局的笔迹」「回退到上一条」必须能直接读写它）
+      saveBestRecord: saveBestRecord,
+      readBestRecordRaw: readBestRecordRaw,
+      restorePrevBestRecord: restorePrevBestRecord,
+      loadBestRecord: loadBestRecord,
       RANKS: RANKS, SCORE_CFG: SCORE_CFG, GUARD_CFG: GUARD_CFG, CFG: CFG
     };
   }
