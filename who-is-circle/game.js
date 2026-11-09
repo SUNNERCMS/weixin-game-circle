@@ -18,6 +18,19 @@
        (typeof window !== 'undefined' && window.Scoring) || null);
   if (!Scoring) throw new Error('shared/scoring.js 未加载：浏览器端需在 game.js 之前引入 <script src="shared/scoring.js">');
 
+  // 云端上报模块（P3）：**可选依赖** —— 加载不到就退化成单机模式，玩法完全不受影响
+  // （排行榜是增值能力，不能因为它拖垮主玩法）
+  var CloudClient = (typeof module === 'object' && module && module.exports && typeof require === 'function')
+    ? (function () { try { return require('./js/cloud.js'); } catch (e) { return null; } })()
+    : ((typeof GameGlobal !== 'undefined' && GameGlobal.CloudClient) ||
+       (typeof window !== 'undefined' && window.CloudClient) || null);
+
+  // 榜单桥接（P4）：**可选依赖** —— 加载不到就当"没有好友榜"，玩法完全不受影响
+  var LeaderboardBridge = (typeof module === 'object' && module && module.exports && typeof require === 'function')
+    ? (function () { try { return require('./js/leaderboard.js'); } catch (e) { return null; } })()
+    : ((typeof GameGlobal !== 'undefined' && GameGlobal.Leaderboard) ||
+       (typeof window !== 'undefined' && window.Leaderboard) || null);
+
   var SCORE_CFG = Scoring.SCORE_CFG;
   var GUARD_CFG = Scoring.GUARD_CFG;
   var RANKS = Scoring.RANKS;
@@ -84,7 +97,42 @@
     BTN_HIT_PAD: 24,     // 按钮热区外扩，保证 ≥88×88
     ICON_BTN_R: 48,      // 顶栏图标热区半径（96×96 设计px，满足触摸标准）
     ICON_SIZE: 40,       // 图标视觉直径
-    MAX_POINTS: 900      // 笔迹点上限：超出后均匀抽稀，避免长笔迹被硬截断而画面冻结
+    // 结算页等云端结论的**上限**（毫秒）
+    //
+    // 为什么要有上限：结算页是玩家正在看的界面，**不能因为云端慢而冻住**。
+    // 云端正常 ~300ms 就回 ⇒ 1 秒足够；超过就按「服务不可达」处理（乐观落定），
+    // 云端的结论稍后再来修正本地最佳分。
+    CLOUD_SETTLE_WAIT_MS: 1000,
+    // 开发期诊断浮层：把共享画布的关键数字画在屏幕上（排查分辨率时用）
+    // 查完已关掉；要再查就改成 true。
+    DEBUG_OVERLAY: false,
+    // **诊断总开关**（主域与开放数据域一起听它的）
+    //
+    // true  → 榜面底部画开放域诊断行（自读/好友/认出我）+ 主域画 [cloud] 诊断行
+    // false → 正式版什么都不画
+    //
+    // 为什么统一成一个：之前是主域 RANK_DEBUG、开放域 DEBUG_OVERLAY 各开各的，
+    // 正式版漏掉一处就会把调试行印在玩家脸上（真机截图里出现过两行）。
+    // ⚠️ 上线前确认它是 false。
+    DEBUG: false,
+    // P1：开放数据域占位内容在首页的贴图矩形（左上角 + 尺寸，设计px）
+    // P4 起首页这块位置改成「好友排行」入口按钮（见 RANK_BTN）
+    OD_PLACEHOLDER: { x: 125, y: 800, w: 500, h: 96 },
+    // ---- P4：好友榜 ----
+    // 首页入口（次级按钮）：logo 与「开画」之间。
+    // 设计文档 §8.1 写的是 y=772 —— 那个坐标没算上「最佳 XX · 段位」那一行
+    // （它在 y=740），按钮会压到字上，所以往下挪到 830。
+    RANK_BTN: { x: 375, y: 830, w: 280, h: 88 },
+    RANK_PANEL: {
+      pageTitle: { x: 40, y: 200 },                  // 整屏页的标题（开放数据域画）
+      backBtn: { x: 375, y: 1520, w: 340, h: 96 }    // 返回按钮（主域画：触摸在这边）
+    },
+    MAX_POINTS: 900,     // 笔迹点上限：超出后均匀抽稀，避免长笔迹被硬截断而画面冻结
+
+    // ---- 云端（P3）----
+    CLOUD_ENV: 'cloud1-d6grvs82r581230b2',   // 云环境 ID
+    CLOUD_TIMEOUT_MS: 5000,                 // 云调用超时：超了按「服务不可达」降级，不卡住玩法
+    CLOUD_KEY: 'circle'                      // 托管数据 key（≤8 字符全英文，后台排行榜配置对应）
   };
 
   var COL = {
@@ -99,13 +147,17 @@
     cardLine: 'rgba(44,44,42,0.10)',
     fitCircle: '#B4B2A9',  // 结算标准圆虚线
     cardWhite: '#FFFFFF',
-    btnSecondary: '#F1EDE4'
+    btnSecondary: '#F1EDE4',
+    inkBg: '#F7F5F0'          // 纸底（与榜面同色，铺底才无缝）
   };
 
   /* ============================================================
    * 二、环境适配层（约 60 行，上层逻辑只调 env）
    * ============================================================ */
   var hasWx = typeof wx !== 'undefined' && typeof wx.createCanvas === 'function';
+  // 好友榜（P4）：入口按钮**两个环境都显示** —— 浏览器端没有好友关系链，
+  // 点了会提示「要在微信里看」，但界面长得一样才敢信（也才敢用 e2e 断言它存在）
+  var rankEnabled = !!LeaderboardBridge;
 
   // 最小画布桩：仅用于 Node 下跑评分引擎单测（浏览器/小游戏走真实 canvas）
   var stubCtx = {
@@ -120,6 +172,24 @@
     measureText: function (t) { return { width: (t || '').length * 16 }; },
     createLinearGradient: function () { return { addColorStop: function () {} }; }
   };
+
+  // 取开放数据域的离屏画布（sharedCanvas）
+  //
+  // 好友的昵称/头像/分数属于关系链数据，只在开放数据域里读得到。主域拿不到数据本身，
+  // 只能把开放数据域画到 sharedCanvas 上的内容贴出来。
+  //
+  // 不可用时（非微信环境 / 老基础库没有这个 API / 调用抛错）一律返回 null ——
+  // 静默降级，绝不抛错：开放数据域是可选能力，不能因为它拖垮主玩法。
+  // 做成"注入 wxApi 的纯函数"是为了能直接单测这条降级矩阵。
+  function resolveSharedCanvas(wxApi) {
+    if (!wxApi || typeof wxApi.getOpenDataContext !== 'function') return null;
+    try {
+      var odc = wxApi.getOpenDataContext();
+      return (odc && odc.canvas) || null;
+    } catch (e) {
+      return null;
+    }
+  }
 
   var env = {
     isWx: hasWx,
@@ -138,6 +208,12 @@
         getContext: function () { return stubCtx; },
         addEventListener: function () {}
       };
+    },
+
+    // 开放数据域的离屏画布（sharedCanvas）
+    getSharedCanvas: function () {
+      if (!hasWx) return null;
+      return resolveSharedCanvas(wx);
     },
 
     getScreenSize: function () {
@@ -160,6 +236,12 @@
 
     now: function () {
       return (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+    },
+
+    // 墙钟时间（Unix 毫秒）：env.now() 是**相对时间**（performance.now），
+    // 不能直接当时间戳用 —— 托管数据的 update_time 要的是 Unix 秒。
+    wallNow: function () {
+      return Date.now();
     },
 
     loadImage: function (src, cb) {
@@ -284,6 +366,63 @@
   };
 
   /* ============================================================
+   * 二·补、云端上报客户端（P3）
+   *
+   * 只有**有云**时才建客户端：浏览器预览、没有 wx.cloud 的环境一律退化成单机模式，
+   * 行为与 P3 之前完全一致（不调云函数、不影响本地最佳分与新纪录徽章）。
+   *
+   * 依赖全部注入到 js/cloud.js —— 那边不碰任何平台全局，所以 Node 里能用假实现测全部分支。
+   * ============================================================ */
+  var cloud = null;
+
+  function createCloudClient() {
+    if (!CloudClient) return null;
+    if (!hasWx || typeof wx.cloud === 'undefined' || typeof wx.cloud.callFunction !== 'function') return null;
+    try {
+      wx.cloud.init({ env: CFG.CLOUD_ENV, traceUser: true });
+    } catch (e) {
+      return null;   // 云环境没配 / 初始化失败 → 单机模式，不影响玩法
+    }
+    return CloudClient.createClient({
+      callFunction: function (name, data) {
+        return wx.cloud.callFunction({ name: name, data: data });
+      },
+      setUserCloudStorage: function (payload) {
+        return new Promise(function (resolve, reject) {
+          if (typeof wx.setUserCloudStorage !== 'function') {
+            reject(new Error('setUserCloudStorage 不可用'));
+            return;
+          }
+          wx.setUserCloudStorage({
+            KVDataList: payload.KVDataList,
+            success: function () { resolve(true); },
+            fail: function (err) { reject(err); }
+          });
+        });
+      },
+      storage: {
+        get: function (k) { return env.getStorageRaw(k); },
+        set: function (k, v) { env.setStorageRaw(k, v); }
+      },
+      now: function () { return env.wallNow(); },   // 墙钟：托管数据的 update_time 要 Unix 秒
+      // 诊断日志出口：真机（预览模式）看不到别的日志，链路断在哪只能靠这几行判断
+      log: function (msg) {
+        try { if (typeof console !== 'undefined' && console.log) console.log(msg); } catch (e) { /* ignore */ }
+      },
+      key: CFG.CLOUD_KEY,
+      highScore: GUARD_CFG.HIGH_SCORE,   // 95：复用已有的「高分从严」阈值，不另造一个
+      timeoutMs: CFG.CLOUD_TIMEOUT_MS
+    });
+  }
+
+  // 段位索引（托管数据里的 level 字段）
+  function rankIndexOf(score) {
+    var rk = getRank(score);
+    var idx = RANKS.indexOf(rk.rank);
+    return idx < 0 ? 0 : idx;
+  }
+
+  /* ============================================================
    * 三、画布初始化（逻辑坐标 750×1624，等比缩放居中，留边填底色）
    * ============================================================ */
   var canvas = env.createCanvas();
@@ -335,6 +474,16 @@
     wx.onWindowResize(resize);
   } else if (typeof window !== 'undefined') {
     window.addEventListener('resize', resize);
+  }
+
+  // 从后台切回来：补发一次 showLeaderboard。
+  // 原因有二（设计文档 §十二 风险表）：
+  //   1. sharedCanvas 在页面切换 / onShow 后内容会丢 → 开放域要重画
+  //   2. 玩家可能刚在设置页开了「向朋友公开」→ 门禁要重新走一遍
+  if (hasWx && wx.onShow) {
+    wx.onShow(function () {
+      try { resendShowOnShow(); } catch (e) { /* ignore */ }
+    });
   }
 
   if (!hasWx && typeof document !== 'undefined') {
@@ -684,6 +833,11 @@
     env.setStorageRaw('best_rec', JSON.stringify(rec));
   }
 
+  // 作废本地最佳分存档（云端判这一局无效时用）
+  function clearBestRecord() {
+    try { env.setStorageRaw('best_rec', ''); } catch (e) { /* ignore */ }
+  }
+
   function loadBestRecord() {
     try {
       var s = env.getStorageRaw('best_rec');
@@ -730,6 +884,11 @@
     trans: null,             // {from,to,t0,dir}
     pressedBtn: null,        // {id, t0}（按住中）
     btnRelease: null,        // {id, t0}（松手回弹动画中）
+    rankPending: false,      // 好友榜：等玩家在设置页开完「向朋友公开」再回来
+    lastVerdict: '',         // 最近一局的云端结论（榜面用来说明「为什么没上榜」）
+    lastReason: '',
+    cloudDiag: '',           // 托管链路的诊断（画在榜面上，截图就能看）
+    syncDiag: '',            // 对账链路的诊断（与托管分开 —— 两件事不该互相覆盖）
     result: null             // 结算数据（直接画在画布上，无浮层）
   };
 
@@ -756,6 +915,224 @@
     state.drawing = false;
     state.result = null;
     startTransition('home', -1);
+  }
+
+  /* ---------- 好友榜（P4）---------- */
+
+  function rankPanelLayout() {
+    return CFG.RANK_PANEL;
+  }
+
+  // 门禁诊断日志 —— 真机调试时全靠它判断卡在哪一环
+  function rankLog(m) {
+    try { if (typeof console !== 'undefined' && console.log) console.log('[rank] ' + m); } catch (e) { /* ignore */ }
+  }
+
+  // 错误对象 → 一行可读文本（errMsg 通常是 'authorize:fail auth deny' 这种）
+  function msg(e) {
+    if (!e) return '(无)';
+    if (typeof e === 'string') return e;
+    return e.errMsg || e.message || JSON.stringify(e);
+  }
+
+  function getWxApi(wxApi) {
+    if (wxApi) return wxApi;
+    return hasWx ? wx : null;
+  }
+
+  // 主域 → 开放域（单向）。老基础库没有这个 API → 静默降级。
+  function postToOpenData(msg, wxApi) {
+    var w = getWxApi(wxApi);
+    if (!w || typeof w.getOpenDataContext !== 'function') return false;
+    try {
+      var odc = w.getOpenDataContext();
+      if (!odc || typeof odc.postMessage !== 'function') return false;
+      // ⭐ 共享画布的尺寸**由主域来设**：主域知道物理尺寸（env.width/height），
+      // 官方写法也是「把 sharedCanvas 铺满主画布」（drawImage(sc, 0, 0, canvas.width, canvas.height)）
+      // —— 要清晰，位图就得是物理像素大小。
+      //
+      // 之前是在开放域里设的：请求 700×scale = 1126×1897，平台钳成了 402×874
+      // （= 屏幕的**逻辑**尺寸），于是 402px 的位图被拉到 1201 物理px = **放大 3 倍 → 糊**。
+      // 主域设一次 + 开放域再设一次（同样的值），两边一致；
+      // 平台若仍然钳制，开放域会读回实际尺寸并按它算密度（自动降级，不会错位）。
+      try {
+        if (odc.canvas && env.width > 0 && env.height > 0) {
+          odc.canvas.width = env.width;
+          odc.canvas.height = env.height;
+          odLog('主域已设共享画布 ' + odc.canvas.width + '×' + odc.canvas.height +
+                '（物理px）');
+        }
+      } catch (e) { /* 设不了就让开放域自己设 */ }
+      odc.postMessage(msg);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function buildShowMessage(wxApi) {
+    if (!LeaderboardBridge) return null;
+    var best = (typeof state.best === 'number') ? state.best : null;
+    var level = null;
+    if (best !== null) {
+      var rk = getRank(best);
+      level = RANKS.indexOf(rk.rank);
+      if (level < 0) level = null;
+    }
+    // 托管数据里**我的**分与段位 —— 开放域认「我」的最后一道防线靠它。
+    //
+    // 来源是本地记的托管记录（js/cloud.js 的 rememberHosting）：
+    // 有记录 ⇒ 托管数据写成功过 ⇒ **我的那一行一定在好友列表里**，
+    // 开放域据此做「分数+段位唯一匹配」。
+    var selfRaw = '';
+    var selfHosted = false;
+    var selfHostedScore = null;
+    var selfHostedLevel = null;
+    if (cloud && cloud.enabled) {
+      var h = cloud.recallHosting();
+      if (h && typeof h.raw === 'string') selfRaw = h.raw;
+      if (h && typeof h.score === 'number' && h.score > 0) {
+        selfHosted = true;
+        selfHostedScore = h.score;
+        selfHostedLevel = (typeof h.level === 'number') ? h.level : 0;
+      }
+    }
+    return LeaderboardBridge.buildShowMessage({
+      key: CFG.CLOUD_KEY,
+      selfScore: best,
+      selfLevel: level,
+      selfRaw: selfRaw,
+      selfHosted: selfHosted,
+      selfHostedScore: selfHostedScore,
+      selfHostedLevel: selfHostedLevel,
+      debug: CFG.DEBUG,
+      width: CFG.DESIGN_W,        // 整屏页 = 设计网格整屏
+      height: CFG.DESIGN_H,
+      // ⚠️ 这里传的是**主域的物理像素/设计像素**比例（view.scale ≈ 1.56），
+      // **不是设备像素比 env.dpr（≈3）**。
+      //
+      // 原因：开放域的共享画布是**物理像素**的，主域又把它画进设计坐标矩形里。
+      // 要让内容在屏幕上和主域一样大，共享画布的密度就得等于主域的 view.scale；
+      // 传 dpr 会让内容被放大/裁切（真机上出现过文字被放大三倍、卡片被切掉右边）。
+      scale: view.scale,
+      // 最近一局的云端结论：榜面用它说清「本地最高分为什么没上榜」
+      lastVerdict: state.lastVerdict || '',
+      lastReason: state.lastReason || '',
+      // 共享画布**只能是屏幕大小**（逻辑px）—— 平台不接受别的尺寸。
+      // 真机实测（2026-11-07）：请求 1126×1897，平台给的是 402×874
+      // （= 屏幕逻辑尺寸 1206×2622 ÷ dpr 3）。所以按屏幕尺寸画、主域 1:1 贴。
+      // 共享画布的**物理**尺寸（= 主域画布的大小，官方写法就是铺满它）
+      canvasW: env.width,
+      canvasH: env.height,
+      designScale: view.scale,                          // 设计px → 物理px
+      rankNames: LeaderboardBridge.resolveRankNames(RANKS),
+      style: LeaderboardBridge.buildStyleParams()
+    });
+  }
+
+  /**
+   * 打开好友榜。
+   *
+   * 先过**隐私门禁**（设计文档 §8.3）：`scope.friendCloudStorage` 是隐私设置，
+   * 不是普通授权，处理用三态：
+   *   已授权 → 直接开
+   *   曾拒绝 → 只能引导去设置页手动打开
+   *   没决定 → 先 authorize，失败再引导去设置页
+   *
+   * 门禁放在"玩家主动点开排行榜"这一刻（不是一进游戏就弹 —— 首屏要授权转化率很难看）。
+   *
+   * @returns {Promise<{status:string}>} status: opened / denied / unavailable / error
+   */
+  function openLeaderboard(wxApi) {
+    var w = getWxApi(wxApi);
+    if (!w || !LeaderboardBridge) {
+      // 浏览器端：没有微信环境，好友关系链读不到 —— 说清楚，别让人以为按钮坏了
+      showToast('好友榜要在微信里看哦');
+      return Promise.resolve({ status: 'unavailable' });
+    }
+    // 关系链数据的授权 scope —— **名字必须是这个**（官方 SCOPE 列表里只有它）。
+    // 写成 scope.friendCloudStorage 会**静默失效**：authorize 必然失败 →
+    // 玩家被引导去设置页 → 而设置页里根本没有「向朋友公开」这一项
+    // （因为从没成功请求过）→ 死循环，玩家永远开不了。
+    var FRIEND_SCOPE = 'scope.WxFriendInteraction';
+    return new Promise(function (resolve) {
+      var settled = false;
+      function done(status) {
+        if (settled) return;
+        settled = true;
+        resolve({ status: status });
+      }
+      function goRank() {
+        state.rankPending = false;
+        startTransition('rank', 1);
+        postToOpenData(buildShowMessage(w), w);
+        rankLog('已授权 → 打开榜面');
+        done('opened');
+      }
+      function guideToSetting(reason) {
+        // 玩家可能去设置页开了再回来 —— 回来时（onShow）要重新试一次
+        state.rankPending = true;
+        rankLog('未授权（' + reason + '）→ 引导去设置页开「向朋友公开」');
+        showToast('请在设置里开启「向朋友公开」');
+        try { if (typeof w.openSetting === 'function') w.openSetting({}); } catch (e) { /* ignore */ }
+        done('denied');
+      }
+      function askAuthorize() {
+        if (typeof w.authorize !== 'function') { guideToSetting('无 authorize 接口'); return; }
+        rankLog('未决定 → 请求授权 ' + FRIEND_SCOPE);
+        try {
+          w.authorize({
+            scope: FRIEND_SCOPE,
+            success: function () { goRank(); },
+            fail: function (e) { guideToSetting('授权被拒 ' + msg(e)); }
+          });
+        } catch (e) { guideToSetting('authorize 抛错 ' + msg(e)); }
+      }
+      try {
+        if (typeof w.getSetting !== 'function') { guideToSetting('无 getSetting 接口'); return; }
+        w.getSetting({
+          success: function (res) {
+            var auth = (res && res.authSetting) ? res.authSetting[FRIEND_SCOPE] : undefined;
+            var st = LeaderboardBridge.classifyPrivacy(auth);
+            rankLog('authSetting[' + FRIEND_SCOPE + '] = ' + String(auth) + ' → ' + st);
+            if (st === 'granted') goRank();
+            else if (st === 'denied') guideToSetting('曾拒绝');
+            else askAuthorize();
+          },
+          fail: function (e) { rankLog('getSetting 失败 → 试 authorize ' + msg(e)); askAuthorize(); }
+        });
+      } catch (e) {
+        rankLog('getSetting 抛错 ' + msg(e));
+        done('error');
+      }
+    });
+  }
+
+  function closeLeaderboard(wxApi) {
+    var w = getWxApi(wxApi);
+    state.rankPending = false;
+    if (LeaderboardBridge) postToOpenData(LeaderboardBridge.buildHideMessage(), w);
+    startTransition('home', -1);
+  }
+
+  /**
+   * 从后台切回来时补发。
+   *
+   * 两个原因要补：
+   *   1. `sharedCanvas` 在页面切换 / onShow 后内容会丢 → 开放域要重画
+   *   2. 玩家刚在设置页开了「向朋友公开」→ 门禁要重新走一遍
+   */
+  function resendShowOnShow(wxApi) {
+    var w = getWxApi(wxApi);
+    if (state.rankPending) {
+      state.rankPending = false;
+      openLeaderboard(w);
+      return true;
+    }
+    var inRank = (state.page === 'rank') || (state.trans && state.trans.to === 'rank');
+    if (!inRank) return false;
+    if (!LeaderboardBridge) return false;
+    return postToOpenData(buildShowMessage(w), w);
   }
 
   // 点击跳过结算动画：把时间轴直接推到终点
@@ -809,9 +1186,153 @@
       vibrated: false                                // 新纪录震动只触发一次
     };
     res.layout = layoutResult(res);   // 排版算一次存起来，不再每帧重算
+    res.pts = state.points.slice();   // 存一份笔迹：最高分存档要靠它自校验
+    res.localScore = r.score;         // 云端分回来之前，本地算的分
     state.result = res;
     // 最高分不立即改显示：新纪录徽章播完再落定（否则顶部数字先变、徽章后出现＝剧透）
-    if (res.isNew) state.bestPending = r.score;
+    if (res.isNew) state.bestPending = { score: r.score, pts: res.pts, cloudPending: false };
+    // P3：破纪录才上报云端（D4）。高分（≥95）同步等云端结论，低分异步不阻塞结算。
+    // 开发版（DEV）：云端结论只作提示，不改本地行为 —— 与本地 judge 的开发豁免同一个道理
+    //   （服务端没有开发豁免，开发者自己的合成笔迹会被云端判成 shadow，不豁免就没法调试）
+    if (res.isNew && cloud && cloud.enabled) {
+      // ⭐ **所有分数都等云端结论**，不只是 ≥95 的。
+      // 原因（真机现象 2026-11-07）：本地最高 76.3，但好友榜显示「本地最高 76.3（未上榜）」，
+      // 而榜上第一名才 67.1 —— 两个数字打架。
+      // 因为低分走异步路径：不等云端就把 76.3 存进本地存档了；云端后来判无效
+      // （限流 reject / 行为异常 shadow）时，`state.bestPending` 早就 null 了，
+      // **那个分数没人回收** ⇒ 本地永远存着一个云端不认的分数。
+      // 等云端结论后：无效的局根本不会进本地存档，两个数字天然一致。
+      res.cloudPending = !DEV;
+      // 兜底：云端结论回不来（超时/异常）时别把最佳分永远卡住。
+      // 超时 → 按「服务不可达」处理 → 解除等待 → 最佳分照常落定（保持单机行为）。
+      state.settleGuardTimer = setTimeout(function () {
+        state.settleGuardTimer = null;
+        if (state.bestPending && state.bestPending.cloudPending) {
+          state.bestPending.cloudPending = false;
+          odLog('云端结论超时 → 解除等待（最佳分照常落定）');
+        }
+      }, CFG.CLOUD_SETTLE_WAIT_MS);
+      // 最佳分的落定也要等云端 —— 结算页被关掉了也不能让本地最佳分比榜上虚高
+      if (state.bestPending) state.bestPending.cloudPending = res.cloudPending;
+      cloud.submitIfRecord({
+        score: r.score,
+        level: rankIndexOf(r.score),
+        pts: encodePts(state.points),
+        sig: sig,
+        guard: g,
+        clientBest: (typeof state.best === 'number') ? state.best : 0,
+        onSettled: function (final) { onCloudSettled(res, final); }
+      });
+    }
+  }
+
+  // 云端结论落地
+  //
+  // · 同步路径（≥95）：分数换成**云端分**（榜上的分永远是云端算出来的）
+  // · 云端判无效（shadow / reject）：分数照常显示，但**不弹新纪录徽章**、
+  //   本地最佳分不变、也不上报托管数据（不上榜）
+  // · 云端不可达（unavailable）：**服务不可达 ≠ 作弊证据** —— 保持单机行为，
+  //   本地最佳分照常更新、徽章照常弹，只是不上榜、不弹错误提示
+  function onCloudSettled(res, final) {
+    if (!res || !final) return;
+    // 云端结论到了 → 解除兜底定时器
+    try {
+      if (state.settleGuardTimer) {
+        clearTimeout(state.settleGuardTimer);
+        state.settleGuardTimer = null;
+      }
+    } catch (e) { /* ignore */ }
+    // 记下云端结论 —— 榜面底部那行用它说明「为什么本地最高分没上榜」
+    state.lastVerdict = final.verdict || final.status || '';
+    state.lastReason = final.reason || '';
+    // 托管数据写成功没有？（写失败 ⇒ 榜上永远没有你）
+    if (final.status === 'ok') {
+      state.cloudDiag = '托管' + (final.hosted ? '✓' : '✗') +
+                        (typeof final.hostedScore === 'number' ? ' ' + final.hostedScore : '');
+    }
+    if (final.status === 'ok') {
+      var cs = final.cloudScore;
+      if (typeof cs === 'number' && Math.abs(cs - res.score) > 0.001) {
+        res.score = cs;
+        var rk = getRank(cs);
+        res.rank = rk.rank;
+        res.next = rk.next;
+        res.comment = pickComment(rk.rank);
+        res.layout = layoutResult(res);
+      }
+      res.cloudPending = false;
+      // 本地最佳分用**云端分** —— 本地不能比榜上虚高
+      if (state.bestPending && state.bestPending.pts === res.pts) {
+        state.bestPending.score = cs;
+        state.bestPending.cloudPending = false;
+      } else {
+        // 结论晚到（最佳分已乐观落定）→ 把分对齐成云端分。
+        // ⚠️ 比对要用**本地原始分**（res.localScore）——
+        //    res.score 在这里已经被云端分覆盖过了，拿它比永远不相等。
+        // 差值 ≤0.15：本地重算与云端算分一致，改了不影响存档的自校验。
+        var localScore = (typeof res.localScore === 'number') ? res.localScore : res.score;
+        if (state.best === localScore && Math.abs(cs - localScore) <= 0.15) {
+          state.best = cs;
+          try { saveBestRecord(cs, state.result && state.result.pts); } catch (e) { /* ignore */ }
+        }
+      }
+      return;
+    }
+    if (final.status === 'shadow' || final.status === 'reject') {
+      if (!DEV) {
+        res.isNew = false;
+        res.cloudPending = false;
+        if (state.bestPending && state.bestPending.pts === res.pts) {
+          state.bestPending = null;   // 云端判无效 → 本地最佳分不动
+        } else if (state.best === ((typeof res.localScore === 'number') ? res.localScore : res.score)) {
+          // ⚠️ **结论晚到了**（超过了结算页的等待上限，最佳分已乐观落定）
+          // ⇒ 这一局云端不认 ⇒ 本地最佳分要作废。
+          // 存档是「分数 + 笔迹 + 校验和」自校验的，改分数会破坏校验 ⇒
+          // 只能整条作废（这一局的分本来就不该算数）。
+          state.best = null;
+          clearBestRecord();
+          odLog('云端判无效（结论晚到）→ 本地最佳分已作废');
+        }
+        return;
+      }
+      // 开发版：云端判无效只作提示，不改本地行为（与本地 judge 的开发豁免一致）
+      res.cloudPending = false;
+      if (state.bestPending && state.bestPending.pts === res.pts) {
+        state.bestPending.cloudPending = false;
+      }
+      return;
+    }
+    res.cloudPending = false;   // unavailable / off：保持单机行为
+    // 服务不可达 → 不等云端了，按单机行为落定最佳分（只不上榜而已）
+    if (state.bestPending && state.bestPending.pts === res.pts) {
+      state.bestPending.cloudPending = false;
+    }
+  }
+
+  /**
+   * 对账结果 → 一行人话。
+   *
+   * 为什么不能都写成「无」：对账的失败长得完全不一样 ——
+   *   「不用补写」是**正常**（托管数据本来就比云端新），
+   *   「云端没给分」是**异常**（云端账本里没有有效成绩），
+   *   「云端不可达」是**网络问题**（对账失败不影响玩法，但要知道）。
+   * 三种都写成「无」的话，截图上根本看不出断在哪一环 —— 排查全靠猜。
+   */
+  function syncDiagText(client, best) {
+    var st = (client && typeof client.syncStatus === 'function') ? client.syncStatus() : null;
+    var status = (st && st.status) ? st.status : (best ? 'ok' : 'unknown');
+    var b = (st && typeof st.best === 'number') ? st.best
+          : (typeof best === 'number' ? best : null);
+    switch (status) {
+      case 'ok':       return '对账✓补写' + (b !== null ? b : '');
+      case 'resync':   return '对账↻补原文';
+      case 'noop':     return '对账=已同步';
+      case 'noBest':   return '对账✗云端无分';
+      case 'failed':   return '对账✗补写失败';
+      case 'unreachable': return '对账✗不可达';
+      case 'off':      return '对账-未开云';
+      default:         return '对账?' + status;
+    }
   }
 
   /* ============================================================
@@ -874,6 +1395,16 @@
         state.pressedBtn = { id: 'start', t0: env.now() };
         return;
       }
+      // 主页「好友排行」
+      if (state.page === 'home' && !state.trans && rankEnabled && hitBtn(x, y, CFG.RANK_BTN)) {
+        state.pressedBtn = { id: 'rank', t0: env.now() };
+        return;
+      }
+      // 好友榜页底部「返回」
+      if (state.page === 'rank' && !state.trans && hitBtn(x, y, CFG.RANK_PANEL.backBtn)) {
+        state.pressedBtn = { id: 'rankBack', t0: env.now() };
+        return;
+      }
       // 画圆页起笔
       if (state.page === 'draw' && !state.trans && !state.result) {
         state.points.length = 0;   // 只在起笔时清空
@@ -915,10 +1446,18 @@
         var activated =
           (id === 'start' && hitBtn(x, y, CFG.START_BTN)) ||
           (id === 'again' && hitBtn(x, y, AGAIN_BTN)) ||
+          (id === 'rank' && hitBtn(x, y, CFG.RANK_BTN)) ||
+          (id === 'rankBack' && hitBtn(x, y, CFG.RANK_PANEL.backBtn)) ||
           (id === 'back' && hitIcon(x, y) === 'back');
         if (activated && id === 'start') goDraw();
         else if (activated && id === 'again') { state.result = null; state.points.length = 0; state.raw.length = 0; state.drawing = false; }
-        else if (activated && id === 'back') goHome();
+        else if (activated && id === 'rank') openLeaderboard();
+        else if (activated && id === 'rankBack') closeLeaderboard();
+        else if (activated && id === 'back') {
+          // 好友榜页的返回箭头 = 关榜面；画圆页的返回箭头 = 回首页
+          if (state.page === 'rank') closeLeaderboard();
+          else goHome();
+        }
         return;
       }
       if (state.discardGesture) { state.discardGesture = false; return; }
@@ -979,6 +1518,107 @@
   }
 
   // ---- 主页 ----
+  // 开放数据域的离屏画布：懒取一次并缓存（getOpenDataContext 不便宜，且结果不变）
+  var odCanvas = null;
+  var odCanvasTried = 0;
+  // 开放数据域是**异步**起来的：主域第一帧时它可能还没初始化完，
+  // 这时 wx.getOpenDataContext().canvas 还是 null —— 早一次就永久放弃了。
+  // 所以这里失败要重试（拿到 canvas 对象后就不用再取，只要等它有宽高）。
+  var OD_GET_RETRY = 180;   // 最多重试 180 帧（约 3 秒），之后不再取
+  var odLogState = 0;       // 0=还没结论 1=已连通 2=已放弃
+  function odLog(msg) {
+    try { if (typeof console !== 'undefined' && console.log) console.log('[open-data] ' + msg); } catch (e) { /* ignore */ }
+  }
+  function getOdCanvas() {
+    if (!odCanvas && odCanvasTried < OD_GET_RETRY) {
+      odCanvasTried++;
+      odCanvas = env.getSharedCanvas();
+    }
+    return odCanvas;
+  }
+
+  // 开放数据域贴不上时画一块**明确不同**的兜底块。
+  //
+  // 为什么要可见："什么都没画"同时对应三种原因（通路没通 / 尺寸为 0 / 画到屏幕外）
+  // ——没法判定。画出来就是二值判定：贴上了 = 通了，灰块 = 没通。
+  function drawOdFallback(c, rect, title, sub) {
+    var r = rect || CFG.OD_PLACEHOLDER;
+    c.save();
+    c.fillStyle = 'rgba(110,104,94,0.10)';
+    c.fillRect(r.x, r.y, r.w, r.h);
+    c.strokeStyle = 'rgba(110,104,94,0.35)';
+    c.lineWidth = 2;
+    c.strokeRect(r.x + 1, r.y + 1, r.w - 2, r.h - 2);
+    fillText(c, title || '开放数据域未连通', r.x + r.w / 2, r.y + r.h / 2 - 12, 'bold 30px sans-serif', COL.grayText);
+    if (sub) fillText(c, sub, r.x + r.w / 2, r.y + r.h / 2 + 22, '24px sans-serif', COL.grayText);
+    c.restore();
+  }
+
+  // 把开放数据域画好的内容贴到主域画布的某个矩形里。
+  // 按 sharedCanvas 的实际宽高比等比居中 —— 开放数据域改了尺寸也不会拉伸变形，
+  // 主域也不必和它约定死尺寸（少一份会漂移的常量）。
+  // @returns {boolean} 贴上了没有（false = 主域可以自己画兜底）
+  function drawSharedCanvas(c) {
+    var sc = getOdCanvas();
+    if (!sc || !sc.width || !sc.height) {
+      // 没通 → 日志里留一句，断在哪一目了然
+      if (odLogState === 0 && odCanvasTried >= OD_GET_RETRY) {
+        odLogState = 2;
+        odLog('放弃：重试 ' + odCanvasTried + ' 次仍未拿到可用的 sharedCanvas');
+      }
+      return false;
+    }
+    if (odLogState !== 1) {
+      odLogState = 1;
+    }
+    // 共享画布 = 屏幕大小（逻辑px），它的后备缓冲 = 主域画布的物理尺寸 ——
+    // 所以按**整屏 1:1** 贴：既清晰又不变形。
+    // 卡片在画布里的位置由开放数据域决定（它按内容矩形画），主域不用知道。
+    var pr = computePasteRect(sc);
+    var w = pr.w, h = pr.h;
+    if (odLogState === 1) {
+      odLogState = 2;
+      // 这几个数对不上 → 内容会被放大/裁切/错位（真机上踩过），所以记一笔
+      odLog('共享画布 ' + sc.width + '×' + sc.height + '（物理px）→ 贴成设计 ' +
+            Math.round(w) + '×' + Math.round(h) + '，view.scale=' + view.scale.toFixed(3) +
+            '（画布=' + env.width + '×' + env.height + '）');
+    }
+    try {
+      c.drawImage(sc, pr.x, pr.y, pr.w, pr.h);
+      return true;
+    } catch (e) {
+      // 贴不上就当没有这一块 —— 开放数据域是可选能力，不能因此影响主玩法
+      return false;
+    }
+  }
+
+  /**
+   * 算共享画布在主域里的贴图矩形（纯函数，好单测）。
+   *
+   * ⚠️ **不要在这里除 view.scale** —— sc.width 与 rect.w 本来就是同一个量纲
+   * （都是设计坐标那一侧的数字），除一次等于把卡片压扁。
+   * 真机实测过（2026-11-07）：卡片只有 77% 宽、内容发虚。
+   *
+   * 位图的**密度**由开放数据域负责对齐（它按主域给的 scale 画），
+   * 主域只管「等比贴进矩形」—— 密度对上了就是 1:1，既不糊也不变形。
+   */
+  function computePasteRect(sc) {
+    // 共享画布是**屏幕大小**（逻辑px）→ 贴满整屏，1:1 物理像素。
+    // 位图的宽高比与设计网格不一致时（不同机型），按位图比例算高度并垂直居中，
+    // 这样不会拉伸变形。
+    var ar = (sc && sc.height > 0) ? (sc.width / sc.height) : 1;
+    var w = CFG.DESIGN_W;
+    var h = w / ar;
+    var maxH = CFG.DESIGN_H;
+    if (h > maxH) { h = maxH; w = h * ar; }
+    return {
+      x: (CFG.DESIGN_W - w) / 2,
+      y: (CFG.DESIGN_H - h) / 2,
+      w: w,
+      h: h
+    };
+  }
+
   function renderHome(c, alpha, dx) {
     c.save();
     c.globalAlpha = alpha;
@@ -1005,6 +1645,10 @@
     } else {
       fillText(c, '还没有成绩，画一个试试', 375, bestY, '34px sans-serif', COL.grayText);
     }
+    // 好友榜入口（P4）：次级按钮，在「最佳成绩」与「开画」之间
+    if (rankEnabled) {
+      drawButton(c, CFG.RANK_BTN, '好友排行', pressedRatio('rank'), false);
+    }
     // 开画按钮
     drawButton(c, CFG.START_BTN, '开 画', pressedRatio('start'), true);
     // 底部说明
@@ -1014,6 +1658,89 @@
     for (var hi = 0; hi < hIcons.length; hi++) {
       drawIcon(c, hIcons[hi].id, hIcons[hi].x, hIcons[hi].y, CFG.ICON_SIZE);
     }
+    c.restore();
+  }
+
+  // ---- 好友榜页（P4）----
+  //
+  // 榜面**内容**是开放数据域画的（它才读得到好友昵称/头像/分数），
+  // 主域只负责：遮罩、标题、把它贴出来、关闭按钮。
+  // 底部那行「我的历史最高 · 第 N 名」也在开放域里 —— 开放域 → 主域是单向的，
+  // 名次算好了也传不回来。
+  function renderRank(c, alpha, dx) {
+    c.save();
+    c.globalAlpha = alpha;
+    c.translate(dx, 0);
+    var L = CFG.RANK_PANEL;
+    // 榜面 = **整屏页**（开放数据域画满一屏），主域按 1:1 贴进来。
+    //
+    // ⚠️ 先铺一层纸底：榜面的高度 = 屏幕比例换算出来的设计px，
+    // 16:9 的手机（375×667）只有 1334 设计px，比设计网格（1624）矮 →
+    // 不铺底的话，榜面下方的区域会露出下层页面（首页）✗
+    c.fillStyle = COL.inkBg;
+    c.fillRect(0, 0, CFG.DESIGN_W, CFG.DESIGN_H);
+    var pr = computePasteRect(getOdCanvas() || { width: 0, height: 0 });
+    if (!drawSharedCanvas(c)) {
+      drawRankFallback(c, L);
+    }
+    // 开发期诊断行：云端链路的最后一手（托管写入 / 对账）——
+    // 没有真机调试时日志看不到，但截图能看。
+    //
+    // ⚠️ 由 CFG.DEBUG 统一控制（正式版 false ⇒ 一行都不画）。
+    // 托管与对账是**两件独立的事**，分开记 —— 之前合成一个字段，
+    // 后来的会覆盖先来的，截图上就只剩半截信息。
+    var diag = [state.cloudDiag, state.syncDiag].filter(Boolean).join(' ');
+    if (CFG.DEBUG && diag) {
+      c.fillStyle = COL.grayText;
+      c.font = '20px monospace';
+      c.textAlign = 'left';
+      c.textBaseline = 'middle';
+      c.fillText('[cloud] ' + diag, 16, CFG.DESIGN_H - 18);
+    }
+    // 底部返回（主域画：触摸在这边处理）
+    // 位置跟着榜面底部走，并**避开底部手势条**（iPhone 的 home indicator）
+    // —— 固定 y 会在 16:9 机器上飘在半空、在全面屏手机上被手势条压住。
+    var safeB = env.safeBottom || 0;
+    var btnY = Math.min(pr.y + pr.h - 75, CFG.DESIGN_H - safeB - 48);
+    if (btnY < L.backBtn.y - 140) btnY = L.backBtn.y - 140;
+    drawButton(c, { x: L.backBtn.x, y: btnY, w: L.backBtn.w, h: L.backBtn.h },
+               '返回', pressedRatio('rankBack'), false);
+    // 开发期诊断浮层：把贴图的关键数字画在屏幕上，截图就能看。
+    // （排查共享画布分辨率时用过；查完了就关掉 —— 正式版不该有这行绿字。
+    //   需要时把 CFG.DEBUG_OVERLAY 改回 true 即可。）
+    if (CFG.DEBUG_OVERLAY) drawRankDebug(c, L);
+    c.restore();
+  }
+
+  // 开放数据域没连上时主域自己画的兜底页（别让用户对着空白发呆）
+  function drawRankFallback(c, L) {
+    c.save();
+    c.fillStyle = COL.INK_BG;
+    c.fillRect(0, 0, CFG.DESIGN_W, CFG.DESIGN_H);
+    fillText(c, '好友排行', CFG.RANK_PANEL.pageTitle.x, CFG.RANK_PANEL.pageTitle.y,
+             'bold 40px sans-serif', COL.ink);
+    fillText(c, '还没准备好', CFG.DESIGN_W / 2, CFG.DESIGN_H / 2, '32px sans-serif', COL.grayText);
+    fillText(c, '（开放数据域未连通）', CFG.DESIGN_W / 2, CFG.DESIGN_H / 2 + 46,
+             '24px sans-serif', COL.grayText);
+    c.restore();
+  }
+
+  // 画一排诊断数字（开发期用，查完把 CFG.DEBUG_OVERLAY 关掉）
+  function drawRankDebug(c, L) {
+    var sc = getOdCanvas();
+    var pr = computePasteRect(sc || { width: 0, height: 0 });
+    var txt = 'sc ' + (sc ? sc.width + 'x' + sc.height : 'none') +
+              '  贴 ' + Math.round(pr.w) + 'x' + Math.round(pr.h) +
+              '  scale ' + view.scale.toFixed(3) +
+              '  画布 ' + env.width + 'x' + env.height;
+    c.save();
+    c.fillStyle = 'rgba(0,0,0,0.72)';
+    c.fillRect(6, 1552, 738, 60);
+    c.fillStyle = '#7CFFB2';
+    c.font = '22px monospace';
+    c.textAlign = 'left';
+    c.textBaseline = 'middle';
+    c.fillText(txt, 16, 1582);
     c.restore();
   }
 
@@ -1239,8 +1966,9 @@
     }
 
     // 6. 新纪录徽章：分数上方，600ms 左右摇摆 ±6°（星星自绘，不用 emoji）
+    //    cloudPending：高分路径还在等云端结论 —— 云端判无效就不该弹"新纪录"徽章
     var badgeEl = el - CFG.FADE_DELAY_MS - CFG.FADE_MS;
-    if (r.isNew && badgeEl > 0) {
+    if (r.isNew && !r.cloudPending && badgeEl > 0) {
       var wob = badgeEl < CFG.BADGE_MS
         ? 6 * Math.sin((badgeEl / CFG.BADGE_MS) * Math.PI * 4) * (1 - badgeEl / CFG.BADGE_MS)
         : 0;
@@ -1279,8 +2007,9 @@
     c.globalAlpha = a;
     c.font = '34px sans-serif';
     var w = c.measureText(state.toast.text).width + 72;
-    // 屏幕上 1/3 处（y≈541），避开顶部「最佳」与底部按钮
-    var ty = Math.round(CFG.DESIGN_H / 3);
+    // 画圆页：屏幕上 1/3 处（y≈541），避开顶部「最佳」与底部按钮
+    // 首页：logo 占着 420..700，落在 1/3 处会盖住标题 → 挪到「开画」按钮下方
+    var ty = (state.page === 'home') ? 1120 : Math.round(CFG.DESIGN_H / 3);
     roundRect(c, 375 - w / 2, ty - 46, w, 92, 46);
     c.fillStyle = 'rgba(44,44,42,0.92)';
     c.fill();
@@ -1304,21 +2033,35 @@
     if (state.result) {
       var el = now - state.result.t0;
       // 新纪录：轻微震动，给一点“破纪录”的实感（v0.3 去掉音效，只保留触觉反馈）
-      if (state.result.isNew && !state.result.vibrated && el >= 0 && hasWx && wx.vibrateShort) {
+      // 高分路径要等云端结论（cloudPending）—— 云端判无效就不该有"破纪录"的错觉
+      if (state.result.isNew && !state.result.cloudPending && !state.result.vibrated &&
+          el >= 0 && hasWx && wx.vibrateShort) {
         state.result.vibrated = true;
         try { wx.vibrateShort({ type: 'light' }); } catch (e) { /* ignore */ }
       }
-      // 最高分落定：等"新纪录"徽章播完再改显示并写入存档（否则顶部数字先变＝剧透）
-      if (state.bestPending !== null && el >= CFG.FADE_DELAY_MS + CFG.FADE_MS) {
-        state.best = state.bestPending;
+    }
+    // 最高分落定：等"新纪录"徽章播完再改显示并写入存档（否则顶部数字先变＝剧透）
+    //   · 同步路径还要等云端结论 —— 榜上的分必须是云端认可的
+    //   · 结算页已经关掉（玩家直接落笔重画）时**立刻落定**，别把最佳分丢了
+    if (state.bestPending !== null) {
+      // cloudPending：高分路径还在等云端结论 —— **结算页被关掉了也要等**，
+      //   否则本地最佳分会比榜上虚高（榜上的分必须是云端认可的）
+      var canSettle = !state.bestPending.cloudPending;
+      if (canSettle && state.result) {
+        canSettle = (now - state.result.t0) >= CFG.FADE_DELAY_MS + CFG.FADE_MS;
+      }
+      if (canSettle) {
+        state.best = state.bestPending.score;
+        var bestPts = state.bestPending.pts || state.points || [];
         state.bestPending = null;
-        try { saveBestRecord(state.best, state.points); } catch (e) { /* ignore */ }
+        try { saveBestRecord(state.best, bestPts); } catch (e) { /* ignore */ }
       }
     }
   }
 
   function renderPage(name, alpha, dx) {
     if (name === 'home') renderHome(ctx, alpha, dx);
+    else if (name === 'rank') renderRank(ctx, alpha, dx);
     else renderDraw(ctx, alpha, dx);
   }
 
@@ -1353,6 +2096,31 @@
   /* ============================================================
    * 十二、启动
    * ============================================================ */
+  // 云端（P3）：建客户端 + 补传上次没传上去的 pending 队列
+  //   补传放在启动时 —— 玩家刚打开游戏就把上次断网时攒下的成绩补齐，榜上才不会出现"断更"
+  cloud = createCloudClient();
+  if (cloud && cloud.enabled) {
+    try {
+      var flushP = cloud.flushPending();
+      if (flushP && typeof flushP.catch === 'function') flushP.catch(function () { /* ignore */ });
+    } catch (e) { /* ignore */ }
+    // 对账：问云端「我的权威最高分是多少」，托管数据落后就补写。
+    //
+    // 为什么需要（2026-11-07 审计）：云端账本（scores）是权威，托管数据是它的**公开副本**，
+    // 而副本是**客户端写的** —— 写失败就没有重试 ⇒「云端有分、榜上永远没有」且无法自愈。
+    // 这次对账把副本拉回与账本一致（写的是云端权威 max ⇒ 幂等、不会写低）。
+    //
+    // 不等 flushPending：那个可能要跑几十秒（限速），对账要尽快做完。
+    try {
+      var syncP = cloud.syncBest();
+      if (syncP && typeof syncP.then === 'function') {
+        syncP.then(function (best) {
+          state.syncDiag = syncDiagText(cloud, best);
+        }, function () { /* ignore */ });
+      }
+    } catch (e) { /* ignore */ }
+  }
+
   var pending = 2;
   var started = false;   // 主循环只允许启动一次（老实现图片超时后可能同时跑出两个 rAF 循环，白耗一倍算力）
   function canLoop() { return typeof requestAnimationFrame === 'function'; }
@@ -1376,6 +2144,16 @@
       guardCheck: guardCheck, shapeSig: shapeSig, isReplay: isReplay, judge: judge,
       encodePts: encodePts, decodePts: decodePts, fnv: fnv,
       largestGap: largestGap, INVALID_TIPS: INVALID_TIPS, BEST_SALT: BEST_SALT,
+      resolveSharedCanvas: resolveSharedCanvas,
+      createCloudClient: createCloudClient,
+      // 好友榜（P4）：主域这一侧的接线（单测钩子）
+      openLeaderboard: openLeaderboard,
+      closeLeaderboard: closeLeaderboard,
+      resendShowOnShow: resendShowOnShow,
+      rankPanelLayout: rankPanelLayout,
+      computePasteRect: computePasteRect,
+      // 结算链路（P3）的集成测试钩子：state 是运行时状态，onCloudSettled 是云端结论落地的入口
+      state: state, onCloudSettled: onCloudSettled,
       RANKS: RANKS, SCORE_CFG: SCORE_CFG, GUARD_CFG: GUARD_CFG, CFG: CFG
     };
   }

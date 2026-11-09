@@ -15,7 +15,13 @@
 ```
 who-is-circle-tests/
 ├── package.json           # npm scripts 入口
-├── unit/scorer.test.js    # 单元测试（Node，无依赖）
+├── unit/scorer.test.js    # 单元测试：评分引擎 / 防作弊 / 段位文案（Node，无依赖）
+├── unit/shared.test.js    # 共享评分引擎守卫 + 编码往返精度（Node，无依赖）
+├── unit/opendata.test.js  # 开放数据域守卫（Node，无依赖）
+├── unit/cloudfn.test.js   # 云函数契约守卫（sha256 一致性等，Node，无依赖）
+├── unit/cloudcore.test.js # 云函数行为（内存 db 跑全流程，Node，无依赖）
+├── tools/sync-scoring.mjs # 把 shared/scoring.js 同步进云函数
+├── tools/verify-cloud.mjs # 端到端云端对拍（要 tcb CLI + 已部署的云函数）
 ├── e2e/drive.mjs          # 端到端驱动（agent-browser + CDP 鼠标轨迹）
 ├── e2e/analyze.py         # 像素级断言（Pillow）
 └── shots/                 # 截图输出（每次跑覆盖）
@@ -36,6 +42,8 @@ npm test
 - 覆盖：圆度锚点表与扣分明细恒等式、采样密度无关性、闭合/方向因子、
   无效判定（直线 / 太小 / 太短 / 一小段弧 / 乱涂）、13 档段位与升级提示、
   防作弊命中与不误伤真人、重放检测、存档往返一致性与改分检测。
+- `npm test` 会依次跑 10 个文件（scorer / shared / opendata / board / leaderboard / cloudcore / cleanup / cloudfn / cloudclient / gamesettle），
+  任何一段失败即中断并返回非 0。
 
 ## 2. 端到端像素验收
 
@@ -62,6 +70,23 @@ npm run test:e2e
 
 > 分类器注意：主按钮橙 `#D95F28=(217,95,40)` 与诊断红 `#C0392B=(192,57,43)` 的 g 值区间重叠，
 > 判定橙必须加 `g>=70` 下限，否则诊断红字会被误判成橙色（曾据此误报「红字缺失」）。
+
+## 3. 云函数（契约 / 行为 / 端到端对拍）
+
+```bash
+cd who-is-circle-tests
+npm run sync:cloud          # shared/scoring.js → cloudfunctions/score/scoring.js
+npm run test:cloudfn        # 契约：sha256 一致、不内联算法、打包边界
+node unit/cloudcore.test.js # 行为：内存 db 跑全流程（不连真云端）
+npm run verify:cloud        # 端到端对拍：真调云函数（要 tcb CLI + 已部署）
+```
+
+- `cloudfn.test.js` 钉住"两份算法不许漂移"：云函数里的 `scoring.js` 与
+  `shared/scoring.js` 必须 **sha256 相同**。改了 `shared/scoring.js` 忘了同步，这里立刻红。
+- `cloudcore.test.js` 用内存 db 跑完整流程：云端分 = 客户端分、云端**重算**而非采信上报分、
+  重放检测、速率限制、最高分只升不降、客户端 `guard` 不参与判定、干跑不落库。
+- `verify:cloud` 把 4 档笔迹送到**真实云函数**（走干跑通道，不落库），
+  与客户端分对拍，验收线 `|Δ| ≤ 0.1`。云函数没部署会直接报错，不会静默跳过。
 
 ## 排查小抄
 

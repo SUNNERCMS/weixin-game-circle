@@ -12,7 +12,53 @@ import { fileURLToPath } from 'url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const AB = process.env.AB || 'agent-browser';
-const URL_BASE = process.env.E2E_URL || 'http://localhost:55724';
+
+// 预览服务地址：E2E_URL 优先；没给就自动探测。
+// （预览服务每次启动的端口不固定，硬编码 55724 迟早连不上 —— 连不上时
+//   点击会全部落空，而 e2e 的表现是"界面停在原地"，很难一眼看出是环境问题。）
+let URL_BASE = process.env.E2E_URL || '';
+
+// 探测某个地址是不是预览服务
+// 判据有两条，缺一不可：
+//   1. 能取到游戏源码 /game.js（廉价过滤）
+//   2. 渲染后页面里有游戏 iframe
+// 只判 1 是不够的：CodeBuddy IDE 的 workbuddy 面板也会把工作区当静态目录暴露，
+// 同样能取到 /game.js，但它根本不是预览服务 —— 拿它当预览，点击全落空，
+// e2e 的表现是"界面停在原地"，极难联想到是环境问题。
+// 判据 2 必须用渲染后的 DOM：预览页是客户端渲染的，curl 拿到的初始 HTML 里没有 iframe。
+async function probePreview(u) {
+  try {
+    const out = execSync(
+      `curl -s -o /dev/null -w '%{http_code} %{size_download}' --max-time 2 '${u}/game.js' 2>/dev/null || true`,
+      { encoding: 'utf8', shell: '/bin/bash' }
+    ).trim();
+    const m = out.match(/^200\s+(\d+)$/);
+    if (!m || Number(m[1]) <= 1000) return false;
+  } catch (e) { return false; }
+
+  try {
+    run(`${AB} open ${u}`);
+    await sleep(2500);
+    const geo = run(`${AB} eval "(()=>{const f=document.querySelector('iframe');if(!f)return 'nof';const r=f.getBoundingClientRect();return JSON.stringify({w:r.width,h:r.height});})()"`)
+      .replace(/\\/g, '');
+    const gm = geo.match(/"w":\s*([\d.]+)\s*,\s*"h":\s*([\d.]+)/);
+    return !!gm && Number(gm[1]) > 100 && Number(gm[2]) > 200;
+  } catch (e) { return false; }
+}
+
+async function findPreviewUrl() {
+  if (URL_BASE) return URL_BASE;
+  const candidates = ['http://localhost:55724'];
+  try {
+    const ports = run("lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null | awk '{print $9}' | sed 's/.*://' | sort -un")
+      .split('\n').map(s => s.trim()).filter(p => /^\d+$/.test(p) && Number(p) > 1024);
+    for (const p of ports) candidates.push('http://localhost:' + p);
+  } catch (e) { /* 扫不到就只试默认端口 */ }
+  for (const u of candidates) {
+    if (await probePreview(u)) return u;
+  }
+  return null;
+}
 const SHOTS = process.env.E2E_SHOTS || path.resolve(HERE, '../shots');
 const run = (cmd) => execSync(cmd, { encoding: 'utf8', shell: '/bin/bash' });
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -21,7 +67,16 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 let S = 0.41459, L = 39.52, T = 31.0;
 const toPage = (dx, dy) => [Math.round(L + dx * S), Math.round(T + dy * S - 0.16)];
 const mouse = (x, y) => run(`${AB} mouse move ${x} ${y}`);
+// 预览壳是 React 应用，**布局会在运行中变**（面板折叠/重排）⇒
+// 之前算好的映射会失效 ⇒ 后面每次点击都落在旧位置 ⇒ 表现为「界面完全没反应」。
+// 所以每次交互前都重新读一次几何（读不到就沿用上次的）。
+function refreshGeo() {
+  const gg = readGeo();
+  if (gg) applyGeo(gg);
+  return gg;
+}
 const click = async (dx, dy) => {
+  refreshGeo();
   const [x, y] = toPage(dx, dy);
   mouse(x, y); run(`${AB} mouse down`); await sleep(60); run(`${AB} mouse up`);
 };
@@ -29,6 +84,7 @@ const shot = async (name) => { run(`${AB} screenshot ${path.join(SHOTS, name + '
 
 // 画一段弧（press=true 时按下；松手由调用方决定）
 async function drawArc(cx, cy, rad, a0deg, a1deg, N, press = true) {
+  refreshGeo();
   let first = true;
   for (let i = 0; i <= N; i++) {
     const a = (a0deg + (a1deg - a0deg) * i / N) * Math.PI / 180;
@@ -52,25 +108,70 @@ const waitForPreview = async (timeout = 30000) => {
   return false;
 };
 
-await run(`${AB} set viewport 390 844`);
+// 找到预览服务
+if (!URL_BASE) {
+  const found = await findPreviewUrl();
+  if (!found) {
+    console.error('❌ 找不到预览服务。请先启动预览（MCP run_game 或开发者工具），' +
+      '或用 E2E_URL=http://localhost:<端口> 指定。');
+    process.exit(1);
+  }
+  URL_BASE = found;
+  console.log('   自动发现预览服务：' + URL_BASE);
+}
+
 await run(`${AB} open ${URL_BASE}`);
 if (!await waitForPreview()) {
-  console.error('❌ 预览页未就绪：' + URL_BASE + '（先在开发者工具里启动预览）');
+  console.error('❌ 预览页未就绪：' + URL_BASE + '（先起预览服务：MCP run_game 或开发者工具）');
   process.exit(1);
 }
 await sleep(6000);   // 游戏引擎启动 + 首帧
 
-// 按预览 iframe 的实际几何反推设计坐标→页面坐标的缩放与偏移
-const raw = run(`${AB} eval "(()=>{const f=document.querySelector('iframe');const r=f.getBoundingClientRect();return JSON.stringify({x:r.x,y:r.y,w:r.width,h:r.height});})()"`).replace(/\\/g, '');
-const gm = raw.match(/"x":\s*([-\d.]+)\s*,\s*"y":\s*([-\d.]+)\s*,\s*"w":\s*([-\d.]+)\s*,\s*"h":\s*([-\d.]+)/);
-if (!gm) {
-  console.error('❌ 读不到预览 iframe 几何：' + raw.trim());
+// 读预览 iframe 的实际几何
+//
+// ⚠️ 别改成读 iframe 内部 canvas 的矩形 —— 实测那样算出来的映射是偏的
+// （scale 从 0.4957 变成 0.5197 ⇒ 点击全落空 ⇒ 表现是「游戏停在首页」）。
+// iframe 的矩形就是对的。
+function readGeo() {
+  const raw = run(`${AB} eval "(()=>{const f=document.querySelector('iframe');if(!f)return 'nof';const r=f.getBoundingClientRect();return JSON.stringify({x:r.x,y:r.y,w:r.width,h:r.height});})()"`)
+    .replace(/\\/g, '');
+  const gm = raw.match(/"x":\s*([-\d.]+)\s*,\s*"y":\s*([-\d.]+)\s*,\s*"w":\s*([-\d.]+)\s*,\s*"h":\s*([-\d.]+)/);
+  if (!gm) return null;
+  return { x: +gm[1], y: +gm[2], w: +gm[3], h: +gm[4] };
+}
+
+// 预览壳把游戏放在右侧的手机预览面板里，iframe 未必填满视口。
+// 视口装不下 iframe 时，点击坐标会算到视口外 —— 表现是"界面完全没反应"，
+// 极难联想到是视口问题。所以这里按实际几何把视口放大到刚好能容纳它。
+let VW = 1400, VH = 1000;
+await run(`${AB} set viewport ${VW} ${VH}`);
+await sleep(600);
+let g = readGeo();
+if (!g) {
+  console.error('❌ 读不到预览 iframe 几何');
   process.exit(1);
 }
-const g = { x: +gm[1], y: +gm[2], w: +gm[3], h: +gm[4] };
-S = Math.min(g.w / 750, g.h / 1624);
-L = g.x + (g.w - 750 * S) / 2;
-T = g.y + (g.h - 1624 * S) / 2;
+const fits = (gg) => gg.x >= 0 && gg.y >= 0 && gg.x + gg.w <= VW && gg.y + gg.h <= VH;
+if (!fits(g)) {
+  VW = Math.ceil(g.x + g.w + 60);
+  VH = Math.ceil(g.y + g.h + 60);
+  await run(`${AB} set viewport ${VW} ${VH}`);
+  await sleep(800);
+  g = readGeo() || g;
+  if (!fits(g)) {
+    console.error(`❌ 预览 iframe 放不进视口：x=${g.x} y=${g.y} w=${g.w} h=${g.h} 视口=${VW}x${VH}`);
+    process.exit(1);
+  }
+  console.log(`   已放大视口到 ${VW}x${VH} 以容纳预览面板`);
+}
+
+// 按预览 iframe 的实际几何反推设计坐标→页面坐标的缩放与偏移
+function applyGeo(gg) {
+  S = Math.min(gg.w / 750, gg.h / 1624);
+  L = gg.x + (gg.w - 750 * S) / 2;
+  T = gg.y + (gg.h - 1624 * S) / 2;
+}
+applyGeo(g);
 console.log(`   映射 scale=${S.toFixed(5)} origin=(${L.toFixed(1)},${T.toFixed(1)})`);
 
 await click(375, 980);

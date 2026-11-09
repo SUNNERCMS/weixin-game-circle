@@ -1,0 +1,9 @@
+{
+  "name": "cleanup",
+  "version": "1.0.0",
+  "description": "清理过期审计记录（submissions 保留 30 天，与隐私保护指引一致）",
+  "main": "index.js",
+  "dependencies": {
+    "wx-server-sdk": "~4.0.2"
+  }
+}
