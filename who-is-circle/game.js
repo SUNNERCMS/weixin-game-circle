@@ -1027,6 +1027,7 @@
     var selfHosted = false;
     var selfHostedScore = null;
     var selfHostedLevel = null;
+    var selfHostedAt = null;
     if (cloud && cloud.enabled) {
       var h = cloud.recallHosting();
       if (h && typeof h.raw === 'string') selfRaw = h.raw;
@@ -1034,6 +1035,7 @@
         selfHosted = true;
         selfHostedScore = h.score;
         selfHostedLevel = (typeof h.level === 'number') ? h.level : 0;
+        selfHostedAt = (typeof h.at === 'number') ? h.at : null;
       }
     }
     return LeaderboardBridge.buildShowMessage({
@@ -1044,6 +1046,7 @@
       selfHosted: selfHosted,
       selfHostedScore: selfHostedScore,
       selfHostedLevel: selfHostedLevel,
+      selfHostedAt: selfHostedAt,
       debug: CFG.DEBUG,
       width: CFG.DESIGN_W,        // 整屏页 = 设计网格整屏
       height: CFG.DESIGN_H,

@@ -184,6 +184,20 @@ section('三、mergeRows —— 去重 + 排序 + 名次');
   ok(Array.isArray(rows) && rows.length === 0, '空输入 → 空数组');
   ok(Array.isArray(Board.mergeRows(null, null)), 'null 输入 → 空数组（不抛）');
 }
+{
+  // ⚠️ **最多删一行** —— 两个好友若在同一秒写出完全相同的托管值，
+  //    原文会逐字符相同。把**所有**相同的行都删掉 ⇒ 那位好友的整行
+  //    会从榜上**直接消失**（比误认更严重：那是抹掉真人成绩）。
+  const same = hosting(95, 10);
+  const a = Board.normalizeFriendEntry({ openid: 'o_a', nickname: '小明', KVDataList: [{ key: 'circle', value: same }] }, 'circle');
+  const b = Board.normalizeFriendEntry({ openid: 'o_b', nickname: '小红', KVDataList: [{ key: 'circle', value: same }] }, 'circle');
+  const self = Board.normalizeSelfEntry({ KVDataList: [{ key: 'circle', value: same }] }, 'circle');
+  const rows = Board.mergeRows([a, b], self);
+  ok(rows.length === 2, '**好友的整行不会被抹掉**（只删自己那一份，多余的保留）', 'len=' + rows.length);
+  ok(rows.filter(r => !r.isSelf).length === 1, '只留下一个好友（不是我）',
+    '好友数=' + rows.filter(r => !r.isSelf).length);
+  ok(rows.some(r => r.nickname === '小明' || r.nickname === '小红'), '那位好友还在榜上');
+}
 
 section('四、truncateText —— 按测量宽度截断');
 
