@@ -638,6 +638,55 @@ console.log('\n========== 十二、存量迁移：记录里没有原文 → 对�
   ok(env.hosted.length === 0, '没有写入', 'writes=' + env.hosted.length);
 }
 
+console.log('\n========== 十三、对账不能挂住，异常结构不能被说成「云端无分」 ==========');
+
+{
+  // ① 云函数挂住（既不 resolve 也不 reject）⇒ 必须有超时，
+  //    否则这个 promise 永远不 resolve ⇒ 诊断行永远空着，看不出「对账根本没回来」。
+  const env = makeDeps({ deferred: true });   // 云函数挂住：既不 resolve 也不 reject
+  const c = Cloud.createClient(env.deps);
+  const t0 = Date.now();
+  const got = await c.syncBest();
+  const dt = Date.now() - t0;
+  ok(got === null, '云端挂住 → 返回 null（不影响玩法）', String(got));
+  ok(dt < 8000, '**没有挂住**（超时兜住了）', dt + 'ms');
+  ok(c.syncStatus().status === 'unreachable', '状态是 unreachable（超时）', c.syncStatus().status);
+}
+
+{
+  // ② 云端回了**结构不对**的东西（不是「云端确实没有分」）——
+  //    两者都归成 noBest 会把一个故障说成事实，排查时被带偏。
+  const env = makeDeps({
+    callResult: function (name, data) {
+      if (data && data.action === 'sync') {
+        return Promise.resolve({ result: { ok: true, error: 'something wrong' } });   // 没有 sync 字段
+      }
+      return Promise.resolve({ result: { ok: true, verdict: 'ok' } });
+    }
+  });
+  const c = Cloud.createClient(env.deps);
+  const got = await c.syncBest();
+  ok(got === null, '结构异常 → 返回 null', String(got));
+  ok(c.syncStatus().status === 'badResponse',
+    '**结构异常 ≠ 云端无分**（status=badResponse，不是 noBest）', c.syncStatus().status);
+}
+
+{
+  // ③ 真正的「云端确实没有分」→ 仍然是 noBest（别把正常的空账本说成异常）
+  const env = makeDeps({
+    callResult: function (name, data) {
+      if (data && data.action === 'sync') {
+        return Promise.resolve({ result: { ok: true, sync: true, best: 0, level: 0 } });
+      }
+      return Promise.resolve({ result: { ok: true, verdict: 'ok' } });
+    }
+  });
+  const c = Cloud.createClient(env.deps);
+  const got = await c.syncBest();
+  ok(got === null, '云端没分 → 返回 null', String(got));
+  ok(c.syncStatus().status === 'noBest', '状态是 noBest', c.syncStatus().status);
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败\n`);
   process.exit(fail ? 1 : 0);
 })().catch(e => {

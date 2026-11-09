@@ -1385,9 +1385,11 @@
       case 'resync':   return '对账↻补原文';
       case 'noop':     return '对账=已同步';
       case 'noBest':   return '对账✗云端无分';
+      case 'badResponse': return '对账✗响应异常';
       case 'failed':   return '对账✗补写失败';
       case 'unreachable': return '对账✗不可达';
       case 'off':      return '对账-未开云';
+      case 'writing':  return '对账…写入中';
       default:         return '对账?' + status;
     }
   }
