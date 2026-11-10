@@ -743,7 +743,84 @@ section('十三、认「我」的最后一道防线：分数+段位**唯一匹�
     ts.filter(t => t === '我').join('|') || '(没认)');
 }
 
-section('十四、诊断行由主域的总开关控制（正式版不画）');
+section('十四、判据的唯一性：宁可认不出，也不认错人');
+
+{
+  // ④ 的「分数+段位」其实退化成「分数」（段位是分数的函数）⇒ 好友一多就有巧合。
+  //    现在加了**写入时刻**这一条：托管数据是**谁写的谁的钟**，
+  //    好友要误中，得在同一秒写出完全相同的分。
+  const fake = makeFakeWx({
+    friends: [friendEntry('o_1', '小明', 78.3, 9), friendEntry('o_2', '小红', 78.3, 9)],
+    userInfoFail: true,
+    selfFail: true,
+  });
+  global.wx = fake;
+  delete require.cache[require.resolve('../../who-is-circle/open-data/index.js')];
+  const OD = require('../../who-is-circle/open-data/index.js');
+  OD.handleMessage({ type: 'showLeaderboard', key: 'circle', width: 750, height: 1624, scale: 2,
+    rankNames: RN10, style: {}, selfScore: 78.3, debug: true,
+    selfHosted: true, selfHostedScore: 78.3, selfHostedLevel: 9,
+    // 我的写入时刻与好友的差很远 ⇒ 不该匹配上
+    selfHostedAt: 1780000000000 }, fake);
+  await new Promise((r) => setTimeout(r, 60));
+
+  const ts = odTexts(fake.ctx);
+  ok(ts.indexOf('我') < 0,
+    '**写入时刻对不上 → 不认**（分数相同也不算数）',
+    ts.filter(t => t === '我').join('|') || '(没认)');
+}
+
+{
+  // 时刻对得上 ⇒ 认出来（这一条是上一轮真机验证过的场景）
+  const fake = makeFakeWx({
+    friends: [friendEntry('o_1', '小明', 82.7, 10), friendEntry('o_2', '小红', 78.3, 9)],
+    userInfoFail: true,
+    selfFail: true,
+  });
+  global.wx = fake;
+  delete require.cache[require.resolve('../../who-is-circle/open-data/index.js')];
+  const OD = require('../../who-is-circle/open-data/index.js');
+  // 托管数据的 update_time 是 1780000000 ⇒ 我的 at 换算成秒也要是它
+  OD.handleMessage({ type: 'showLeaderboard', key: 'circle', width: 750, height: 1624, scale: 2,
+    rankNames: RN10, style: {}, selfScore: 78.3, debug: true,
+    selfHosted: true, selfHostedScore: 78.3, selfHostedLevel: 9,
+    selfHostedAt: 1780000000000 }, fake);
+  await new Promise((r) => setTimeout(r, 60));
+
+  const ts = odTexts(fake.ctx);
+  ok(ts.indexOf('我') >= 0, '**时刻对得上 → 认出来了**',
+    ts.filter(t => t === '我').join('|') || '(没认)');
+  ok(ts.some(t => t.indexOf('我的历史最高') >= 0), '底部是「我的历史最高 · 第 N 名」');
+}
+
+{
+  // ② 托管原文相等：两个好友的原文**逐字符相同**（同一秒写出同样的分）⇒ 认不出
+  const same = hosting(78.3, 9);
+  const fake = makeFakeWx({
+    friends: [
+      { openid: 'o_1', nickname: '小明', avatarUrl: '', KVDataList: [{ key: 'circle', value: same }] },
+      { openid: 'o_2', nickname: '小红', avatarUrl: '', KVDataList: [{ key: 'circle', value: same }] },
+    ],
+    userInfoFail: true,
+    selfFail: true,
+  });
+  global.wx = fake;
+  delete require.cache[require.resolve('../../who-is-circle/open-data/index.js')];
+  const OD = require('../../who-is-circle/open-data/index.js');
+  OD.handleMessage({ type: 'showLeaderboard', key: 'circle', width: 750, height: 1624, scale: 2,
+    rankNames: RN10, style: {}, selfScore: 78.3, debug: true,
+    selfRaw: same, selfHosted: false }, fake);
+  await new Promise((r) => setTimeout(r, 60));
+
+  const ts = odTexts(fake.ctx);
+  ok(ts.indexOf('我') < 0,
+    '**原文匹配到多行 → 不乱认人**（先到先得会认错）',
+    ts.filter(t => t === '我').join('|') || '(没认)');
+  ok(ts.some(t => t.indexOf('小明') >= 0) && ts.some(t => t.indexOf('小红') >= 0),
+    '两个好友都照常显示');
+}
+
+section('十五、诊断行由主域的总开关控制（正式版不画）');
 
 {
   // 正式版：msg.debug 为 false ⇒ 榜面上**一行调试字都不该有**

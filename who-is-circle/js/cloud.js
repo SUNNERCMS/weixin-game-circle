@@ -448,12 +448,20 @@
       if (!enabled) { lastSync = { status: 'off', best: null }; return Promise.resolve(null); }
       var p;
       try {
-        p = Promise.resolve(callFunction('score', { action: 'sync' }));
+        // ⚠️ 必须带超时 —— 与 doCall 用的是同一个 withTimeout。
+        //    不带的话：云函数挂住 ⇒ 这个 promise 永远不 resolve
+        //    ⇒ 诊断行永远停在空状态，排查时看不出「对账根本没回来」。
+        p = withTimeout(callFunction('score', { action: 'sync' }), timeoutMs);
       } catch (e) { lastSync = { status: 'unreachable', best: null }; return Promise.resolve(null); }
       return p.then(function (r) {
         var res = (r && typeof r === 'object' && Object.prototype.hasOwnProperty.call(r, 'result'))
           ? r.result : r;
-        if (!res || res.sync !== true) { lastSync = { status: 'noBest', best: null }; return null; }
+        // ⚠️ 「云端回了**结构不对**的东西」与「云端确实没有分」是两回事 ——
+        //    混成 noBest 会把一个故障说成事实，排查时被带偏。
+        if (!res || typeof res !== 'object' || res.sync !== true) {
+          lastSync = { status: 'badResponse', best: null };
+          return null;
+        }
         var best = res.best;
         if (typeof best !== 'number' || best <= 0) { lastSync = { status: 'noBest', best: null }; return null; }
         var level = (typeof res.level === 'number') ? res.level : 0;

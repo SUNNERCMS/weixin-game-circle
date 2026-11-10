@@ -116,6 +116,9 @@
       selfHosted: !!o.selfHosted,
       selfHostedScore: (typeof o.selfHostedScore === 'number' && isFinite(o.selfHostedScore)) ? o.selfHostedScore : null,
       selfHostedLevel: (typeof o.selfHostedLevel === 'number' && isFinite(o.selfHostedLevel)) ? o.selfHostedLevel : null,
+      // 写托管数据的那一刻（ms）—— 开放域拿它和榜上那一行的 update_time 对齐，
+      // 让「分数+段位」不至于退化成纯数值巧合
+      selfHostedAt: (typeof o.selfHostedAt === 'number' && isFinite(o.selfHostedAt)) ? o.selfHostedAt : null,
       // 开发期诊断总开关（主域统一控制；开放域按它决定要不要画诊断行）
       debug: !!o.debug,
       // 共享画布只能是屏幕大小（逻辑px）—— 平台不接受别的尺寸。

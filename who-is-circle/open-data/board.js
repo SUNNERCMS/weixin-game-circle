@@ -145,7 +145,10 @@
     var level = (typeof obj.level === 'number' && isFinite(obj.level)) ? obj.level : 0;
     // v 缺失 = P3.5 之前写的旧数据 → 当有效成绩，别当「未完全验证」
     var verdict = (obj.v === 'unverified') ? 'unverified' : 'ok';
-    return { score: raw / 10, level: level, verdict: verdict };
+    // update_time（Unix 秒）：托管数据是**谁写的谁的钟**——
+    // 认「我」时用它和本地记录的写入时刻对齐（见 open-data/index.js 的第四路判据）。
+    var ut = (typeof g.update_time === 'number' && isFinite(g.update_time)) ? g.update_time : null;
+    return { score: raw / 10, level: level, verdict: verdict, ut: ut };
   }
 
   // 从 wx.getFriendCloudStorage / wx.getUserCloudStorage 的一个元素里找到托管数据
@@ -215,9 +218,18 @@
       list.push(r);
     }
     if (selfRow) {
+      // 与自己原文相同的行要去掉（平台的好友列表里含自己 ⇒ 自己会重复出现）。
+      // ⚠️ **最多删一行**：两个好友若在同一秒写出完全相同的托管值，
+      //    原文会逐字符相同 —— 把**所有**相同的行都删掉，
+      //    那位好友的整行会从榜上**直接消失**（比误认更严重：那是抹掉真人成绩）。
+      //    宁可榜上多一行重复，也不能让别人的成绩凭空没了。
       var kept = [];
+      var dropped = 0;
       for (var j = 0; j < list.length; j++) {
-        if (selfRow.raw && list[j].raw === selfRow.raw) continue;   // 同一个人
+        if (dropped === 0 && selfRow.raw && list[j].raw === selfRow.raw) {
+          dropped++;   // 同一个人
+          continue;
+        }
         kept.push(list[j]);
       }
       list = kept;
@@ -365,7 +377,8 @@
 
   /**
    * 两个颜色之间线性插值（t: 0=a, 1=b）。
-   * 返回 #rrggbb —— 与输入同形，t=0 时**原样返回**（不换格式，免得样式表看着花）。
+   * 返回 #RRGGBB —— 与输入同形（大写，跟样式表里的写法一致）。
+   * t=0 时算出来就是 a 本身（只是大小写可能被统一）。
    */
   function mixHex(a, b, t) {
     var ca = hexToRgb(a), cb = hexToRgb(b);
@@ -387,10 +400,13 @@
    * 上限 0.55：再深就压不住深色文字了（#2C2C2A 在最深处仍有 6:1 以上的对比度）。
    */
   function rankPillBg(level, rankNames, st) {
+    var s = (st && typeof st === 'object') ? st : DEFAULT_STYLE;
+    var base = s.colorPillBg || DEFAULT_STYLE.colorPillBg;
+    var badge = s.colorBadge || DEFAULT_STYLE.colorBadge;
     var n = (rankNames && rankNames.length) ? rankNames.length : 13;
     var lv = (typeof level === 'number' && isFinite(level) && level >= 0) ? level : 0;
     var t = Math.max(0, Math.min(1, lv / (n - 1)));
-    return mixHex(st.colorPillBg, st.colorBadge, t * 0.55);
+    return mixHex(base, badge, t * 0.55);
   }
 
   /**

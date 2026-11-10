@@ -124,7 +124,7 @@
   //   · 拉取失败但有缓存 → **回退到缓存**（有旧数据总比"读不到"好）
   //
   // 缓存 20 秒：足够覆盖"返回→再打开"，又短到不会让自己的分数显得过时。
-  var cache = { rows: [], at: 0, selfScore: null, diag: '' };
+  var cache = { rows: [], at: 0, selfScore: null, diag: '', ident: '' };
   var CACHE_TTL = 20000;
 
   function handleMessage(msg) {
@@ -134,12 +134,16 @@
       state.error = '';
       var now = Date.now();
       var selfScore = (typeof msg.selfScore === 'number') ? msg.selfScore : null;
-      // 缓存失效的两个条件：
+      // 缓存失效的三个条件：
       //   ① 超过 TTL（好友数据会变，比如对方刚破纪录）
       //   ② **自己的分数变了**（刚打完一局 → 必须显示新分，不能拿缓存里的旧分）
+      //   ③ **身份判据变了**（托管数据刚写好/刚被认出来 → 缓存里那份「没认出我」的
+      //      数据不能继续用，否则底部会一直写「未上榜」）
+      var ident = [!!msg.selfHosted, msg.selfHostedScore, msg.selfHostedLevel, msg.selfRaw].join('|');
       var cacheFresh = cache.rows.length &&
         now - cache.at < CACHE_TTL &&
-        cache.selfScore === selfScore;
+        cache.selfScore === selfScore &&
+        cache.ident === ident;
       if (cacheFresh) {
         // 缓存还新鲜 → 直接用，**不重复调关系链接口**（它有调用频率限制）
         state.rows = cache.rows;
@@ -176,6 +180,7 @@
           cache.at = now;
           cache.selfScore = selfScore;
           cache.diag = diag;
+          cache.ident = ident;
         }
         renderNow();
         loadAvatars(getWx(), state.rows);
@@ -213,6 +218,8 @@
     var hostedOk = !!o.selfHosted;
     var hostedScore = (typeof o.selfHostedScore === 'number' && isFinite(o.selfHostedScore)) ? o.selfHostedScore : null;
     var hostedLevel = (typeof o.selfHostedLevel === 'number' && isFinite(o.selfHostedLevel)) ? o.selfHostedLevel : null;
+    // 写入托管数据的那一刻（ms）—— 用来和榜上那一行的 update_time 对齐
+    var hostedAt = (typeof o.selfHostedAt === 'number' && isFinite(o.selfHostedAt)) ? o.selfHostedAt : null;
     if (!w) return Promise.resolve({ rows: [], error: '没有微信环境', diag: '无微信环境' });
 
     var friendsP = new Promise(function (resolve) {
@@ -256,11 +263,14 @@
       //
       //   ① openid 相等       （getUserInfo 拿 openId —— 可能失败）
       //   ② 托管数据原文相等  （主域知道自己写出去的那串 JSON）
-      //   ③ 自读              （getUserCloudStorage —— 可能返回空）
-      //   ④ 分数+段位**唯一匹配**（主域确认托管数据写成功过 ⇒ 我的行一定在列表里）
+      //   ③ 分数+段位+时刻     （主域确认托管写入成功过 ⇒ 用托管数据里的分/段位/update_time 对齐）
+      //   ④ 自读那一行         （getUserCloudStorage —— 可能返回空）
       //
-      // 真机上 ① 和 ③ **同时失败**过（截图：榜上有我的 78.3，底部却说「未上榜」），
-      // ② 又依赖本地存过原文（老设备没有）⇒ ④ 是最后一道防线。
+      // ⚠️ 实现顺序是 ①②③④（自读放最后，因为它既是兜底、
+      //    又能直接给出「我」那一行的完整数据）。
+      //
+      // 真机上 ① 和 ④ **同时失败**过（截图：榜上有我的 78.3，底部却说「未上榜」），
+      // ② 又依赖本地存过原文（老设备没有）⇒ ③ 是最后一道防线。
       var rows = [];
       var list = friendData || [];
       var selfFound = null;      // 在好友列表里认出的「我」那一行
@@ -279,31 +289,49 @@
       }
       // ② 兜底：openid 认不出时，用**托管数据原文**认
       //    （主域写出去的那串 JSON 与好友列表里我那一行的原文完全相同）
+      //
+      //    ⚠️ 也要**唯一性**检查：原文里含 score/level/update_time(秒)/v，
+      //    两个好友若在同一秒写出完全相同的托管值（一起玩、分又恰好相同），
+      //    原文会逐字符相同 —— 这时先到先得就可能认错人。
       if (!selfFound && myRaw) {
+        var rawHits = [];
         for (var m = 0; m < rows.length; m++) {
-          if (rows[m].raw && rows[m].raw === myRaw) {
-            rows[m].isSelf = true;
-            selfFound = rows[m];
-            rows.splice(m, 1);
-            claimedBy = '原文';
-            break;
-          }
+          if (rows[m].raw && rows[m].raw === myRaw) rawHits.push(rows[m]);
+        }
+        if (rawHits.length === 1) {
+          rawHits[0].isSelf = true;
+          selfFound = rawHits[0];
+          rows.splice(rows.indexOf(rawHits[0]), 1);
+          claimedBy = '原文';
+        } else if (rawHits.length > 1) {
+          odLog('托管原文匹配到 ' + rawHits.length + ' 行 → 认不出（不乱认人）');
         }
       }
-      // ④ 再兜底：openid 与原文都拿不到时，用**分数 + 段位唯一匹配**认
+      // ④ 再兜底：openid 与原文都拿不到时，用**分数 + 段位 + 写入时刻**认
       //
-      //    判据为什么可靠：主域确认「托管数据写成功过」⇒ 我的那一行**一定在**好友列表里
-      //    ⇒ 列表中「分数与段位都等于我」的行**恰好只有一行**时，那行必然是我。
-      //    若真有第二个同分同段位的好友 ⇒ 匹配数是 2 ⇒ **认不出**（宁可认不出，也不认错人）。
+      //    为什么不是只比分数：段位是分数的函数（13 档），所以「分数+段位」
+      //    实际上退化成「分数」一个判据 —— 分是 0.1 粒度，好友一多就有
+      //    「唯一同分」的巧合（生日问题）。所以再加一条**写入时刻**：
+      //    托管数据是**谁写的谁的钟** ⇒ 我那一行的 update_time 与主域记的
+      //    写入时刻是同一个钟 ⇒ 好友要误中，得在同一秒写出**完全相同的分**。
       //
-      //    分数要留容差：托管数据里存的是「分×10」的整数，榜上读到的是它 ÷10，
-      //    与本地记的全精度分可能有 1e-9 级的差。
+      //    ⚠️ 「我的那一行一定在好友列表里」是**假设**，不是保证
+      //    （平台行为有差异、关系链数据可能带缓存）。所以每条路都收得很紧：
+      //    匹配数必须**恰好为 1**，多一行就认不出（宁可认不出，也不认错人）。
+      //
+      //    分数要留容差：托管数据里存的是「分×10」的整数，榜上读到的是它 ÷10。
       if (!selfFound && hostedOk && hostedScore !== null && hostedLevel !== null) {
+        var atSec = (typeof hostedAt === 'number' && isFinite(hostedAt)) ? Math.floor(hostedAt / 1000) : null;
         var hits = [];
         for (var q = 0; q < rows.length; q++) {
-          if (Math.abs(rows[q].score - hostedScore) < 0.05 && rows[q].level === hostedLevel) {
-            hits.push(rows[q]);
+          if (Math.abs(rows[q].score - hostedScore) >= 0.05) continue;
+          if (rows[q].level !== hostedLevel) continue;
+          // 写入时刻要对得上（容差 3 秒：本地记录的 at 是写完之后才取的，可能差 1 秒）
+          if (atSec !== null) {
+            if (rows[q].ut === null) continue;                 // 拿不到时刻 → 不认
+            if (Math.abs(rows[q].ut - atSec) > 3) continue;
           }
+          hits.push(rows[q]);
         }
         if (hits.length === 1) {
           hits[0].isSelf = true;
@@ -311,7 +339,7 @@
           rows.splice(rows.indexOf(hits[0]), 1);
           claimedBy = '唯一';
         } else if (hits.length > 1) {
-          odLog('分数+段位匹配到 ' + hits.length + ' 行 → 认不出（不乱认人）');
+          odLog('分数+段位+时刻匹配到 ' + hits.length + ' 行 → 认不出（不乱认人）');
         }
       }
 
